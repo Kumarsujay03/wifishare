@@ -1,0 +1,195 @@
+#!/bin/bash
+# wifishare: share the Wi-Fi you're connected to through a hotspot on a
+# virtual interface (ap0), like Windows Mobile Hotspot.
+#
+#   wifishare on | off | toggle
+#   wifishare status [--json]
+#   wifishare config [--json]
+#   wifishare set ssid|password <value>
+#   wifishare qr                 print the path to a Wi-Fi QR code PNG
+#   wifishare update             git pull the repo and reinstall what changed
+set -uo pipefail
+
+AP=ap0
+RUN=/run/wifishare
+HELPER=/usr/local/libexec/wifishare-helper
+CONF_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/wifishare"
+CONF="$CONF_DIR/config"
+
+die() { echo "wifishare: $*" >&2; exit 1; }
+
+# --- config --------------------------------------------------------------
+
+SSID=""
+PASSWORD=""
+
+load_config() {
+    if [[ ! -f $CONF ]]; then
+        SSID="${USER^} Hotspot"
+        PASSWORD=$(LC_ALL=C tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 12)
+        save_config
+        return
+    fi
+    local line
+    while IFS= read -r line || [[ -n $line ]]; do
+        case "${line%%=*}" in
+            ssid) SSID="${line#*=}" ;;
+            password) PASSWORD="${line#*=}" ;;
+        esac
+    done < "$CONF"
+}
+
+save_config() {
+    mkdir -p "$CONF_DIR"
+    (umask 077; printf 'ssid=%s\npassword=%s\n' "$SSID" "$PASSWORD" > "$CONF")
+}
+
+valid_ssid() { local n; n=$(printf '%s' "$1" | wc -c); (( n >= 1 && n <= 32 )) && [[ $1 != *$'\n'* ]]; }
+valid_password() { [[ $1 =~ ^[[:print:]]{8,63}$ ]]; }
+
+json_str() {
+    local s=$1
+    s=${s//\\/\\\\}
+    s=${s//\"/\\\"}
+    printf '"%s"' "$s"
+}
+
+# --- state ---------------------------------------------------------------
+
+# The Wi-Fi interface we share from: the connected one if any, else the first.
+parent_iface() {
+    local dev type state first=""
+    while IFS=: read -r dev type state; do
+        [[ $type == wifi && $dev != "$AP" ]] || continue
+        [[ -z $first ]] && first=$dev
+        if [[ $state == connected ]]; then echo "$dev"; return; fi
+    done < <(nmcli -t -f DEVICE,TYPE,STATE device)
+    [[ -n $first ]] && echo "$first"
+}
+
+# On when ap0 exists and hostapd (run by the helper as root) is alive.
+is_active() {
+    local pid
+    [[ -e /sys/class/net/$AP && -r $RUN/hostapd.pid ]] || return 1
+    pid=$(< "$RUN/hostapd.pid")
+    [[ -n $pid && -d /proc/$pid ]]
+}
+
+client_count() {
+    [[ -e /sys/class/net/$AP ]] || { echo 0; return; }
+    iw dev "$AP" station dump 2>/dev/null | grep -c '^Station' || true
+}
+
+# --- on / off ------------------------------------------------------------
+
+turn_on() {
+    load_config
+    valid_ssid "$SSID" || die "network name must be 1-32 bytes"
+    valid_password "$PASSWORD" || die "password must be 8-63 printable characters"
+
+    local parent freq channel band
+    parent=$(parent_iface)
+    [[ -n $parent ]] || die "no Wi-Fi adapter found"
+
+    # A single radio can only sit on one channel, so the hotspot has to use
+    # whatever channel the Wi-Fi connection is on.
+    read -r channel freq < <(iw dev "$parent" info | awk '/channel/ {print $2, substr($3, 2)}')
+    if [[ -z ${channel:-} ]]; then
+        channel=6 freq=2437
+    fi
+    if (( freq < 3000 )); then
+        band=g
+    elif (( freq < 5900 )); then
+        band=a
+        if iw phy "$(iw dev "$parent" info | awk '/wiphy/ {print "phy" $2}')" channels 2>/dev/null \
+            | grep -A4 "MHz \[$channel\]" | grep -q 'Radar detection'; then
+            die "your Wi-Fi is on DFS channel $channel, where a hotspot isn't allowed; connect on 2.4 GHz or a non-DFS 5 GHz channel"
+        fi
+    else
+        die "sharing a 6 GHz connection isn't supported; connect on 2.4 or 5 GHz"
+    fi
+
+    # The name and password go over stdin so they don't show up in `ps`.
+    local err
+    if ! err=$(printf '%s\n%s\n' "$SSID" "$PASSWORD" \
+            | pkexec "$HELPER" up "$parent" "$channel" "$band" 2>&1); then
+        die "the hotspot didn't start: $(tail -n 3 <<< "$err" | tr '\n' ' ')"
+    fi
+    echo "Sharing $parent as \"$SSID\" on channel $channel"
+}
+
+turn_off() {
+    if [[ -e /sys/class/net/$AP || -d $RUN ]]; then
+        pkexec "$HELPER" down || die "could not remove the hotspot interface"
+    fi
+    echo "Hotspot off"
+}
+
+# --- commands ------------------------------------------------------------
+
+cmd=${1:-status}
+case "$cmd" in
+on) turn_on ;;
+off) turn_off ;;
+toggle) if is_active; then turn_off; else turn_on; fi ;;
+status)
+    load_config
+    active=false; is_active && active=true
+    clients=$(client_count)
+    channel=""
+    [[ $active == true ]] && channel=$(iw dev "$AP" info 2>/dev/null | awk '/channel/ {print $2}')
+    if [[ ${2:-} == --json ]]; then
+        printf '{"active":%s,"ssid":%s,"password":%s,"clients":%d,"channel":%s}\n' \
+            "$active" "$(json_str "$SSID")" "$(json_str "$PASSWORD")" "$clients" "${channel:-null}"
+    else
+        if [[ $active == true ]]; then
+            echo "On: \"$SSID\" on channel $channel, $clients device(s) connected"
+        else
+            echo "Off"
+        fi
+        echo "Password: $PASSWORD"
+    fi
+    ;;
+config)
+    load_config
+    if [[ ${2:-} == --json ]]; then
+        printf '{"ssid":%s,"password":%s}\n' "$(json_str "$SSID")" "$(json_str "$PASSWORD")"
+    else
+        printf 'ssid=%s\npassword=%s\n' "$SSID" "$PASSWORD"
+    fi
+    ;;
+set)
+    load_config
+    key=${2:-} value=${3:-}
+    case "$key" in
+        ssid) valid_ssid "$value" || die "network name must be 1-32 bytes"; SSID=$value ;;
+        password) valid_password "$value" || die "password must be 8-63 printable characters"; PASSWORD=$value ;;
+        *) die "usage: wifishare set ssid|password <value>" ;;
+    esac
+    save_config
+    # Apply right away if the hotspot is running.
+    if is_active; then turn_off >/dev/null && turn_on; fi
+    ;;
+qr)
+    command -v qrencode >/dev/null || die "qrencode is not installed"
+    load_config
+    esc() { local s=$1; s=${s//\\/\\\\}; s=${s//;/\\;}; s=${s//,/\\,}; s=${s//:/\\:}; s=${s//\"/\\\"}; printf '%s' "$s"; }
+    payload="WIFI:T:WPA;S:$(esc "$SSID");P:$(esc "$PASSWORD");;"
+    dir="${XDG_RUNTIME_DIR:-/tmp}/wifishare"
+    mkdir -p "$dir"
+    file="$dir/qr-$(printf '%s' "$payload" | sha1sum | cut -c1-12).png"
+    if [[ ! -f $file ]]; then
+        rm -f "$dir"/qr-*.png
+        qrencode -o "$file" -s 6 -m 2 -l M "$payload" || die "could not make the QR code"
+    fi
+    echo "$file"
+    ;;
+update)
+    # This script is a symlink into the repo checkout.
+    repo=$(dirname "$(dirname "$(readlink -f "$0")")")
+    git -C "$repo" pull --ff-only || die "git pull failed in $repo"
+    "$repo/install.sh"
+    ;;
+-h|--help|help) sed -n '2,11s/^# \{0,1\}//p' "$0" ;;
+*) die "unknown command: $cmd (try --help)" ;;
+esac

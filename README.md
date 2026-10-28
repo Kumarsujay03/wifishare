@@ -1,114 +1,174 @@
-# wifishare
+# Share Wi-Fi for GNOME
 
-Share the Wi-Fi you're connected to through a hotspot, like Windows Mobile
-Hotspot, from a **Share Wi-Fi** toggle in GNOME Quick Settings. You stay on
-your Wi-Fi the whole time.
+Share the Wi-Fi you're connected to with your phone, tablet or another
+laptop, like **Mobile Hotspot** on Windows. One toggle in GNOME Quick
+Settings, and you **stay connected to your Wi-Fi the whole time**.
 
-## How it works
+![Share Wi-Fi in GNOME Quick Settings](docs/quick-settings.png)
 
-Ubuntu's built-in hotspot uses your only Wi-Fi interface, so it disconnects
-you from Wi-Fi. wifishare instead adds a second, virtual interface (`ap0`) on
-the same card and runs the hotspot there:
+[![CI](https://github.com/Kumarsujay03/wifishare/actions/workflows/ci.yml/badge.svg)](https://github.com/Kumarsujay03/wifishare/actions/workflows/ci.yml)
+[![Latest release](https://img.shields.io/github/v/release/Kumarsujay03/wifishare)](https://github.com/Kumarsujay03/wifishare/releases/latest)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-- `hostapd` broadcasts the network (WPA2, on the same channel as your Wi-Fi,
-  since one radio can only use one channel),
-- `dnsmasq` hands out `192.168.137.x` addresses and answers DNS,
-- an nftables table masquerades that subnet out through your connection.
+## Features
 
-NetworkManager is told to leave `ap0` alone: it would bring it up as a Wi-Fi
-client first, which cards like Intel's refuse while you're already connected.
+- **Quick Settings toggle** with the device count, band and channel at a glance.
+- **Stays on your Wi-Fi**: the hotspot runs on a second, virtual interface
+  on the same card, so you're never disconnected (Ubuntu's built-in hotspot
+  disconnects you).
+- **Join by QR code**: phones scan it and connect, no typing.
+- **Connected devices**: name, IP, MAC address, signal, time connected and
+  data used for each device.
+- **Band choice**: same as your Wi-Fi (default), 2.4 GHz or 5 GHz.
+- **Settings window** with tabs for the hotspot, joining, devices and updates.
+- **Command line** for everything: `wifishare on`, `status`, `clients`, …
+- **Updates with one command**: `wifishare update`.
+- **On only when you want it**: nothing runs until you turn it on, and
+  turning it off removes everything.
 
-Turning the toggle off stops everything and removes `ap0`. Nothing starts at
-login.
-
-### Pieces
-
-| Path | Runs as | What it does |
-| --- | --- | --- |
-| `extension/` | you, in GNOME Shell | Quick Settings toggle, menu (name, password, band, connected devices, QR code), settings window |
-| `bin/wifishare` | you | CLI the extension calls: `on`, `off`, `toggle`, `status`, `clients`, `set`, `qr`, `update` |
-| `helper/wifishare-helper` | root, via pkexec | creates/removes `ap0`, runs hostapd + dnsmasq, sets up NAT |
-| `helper/*.policy` | – | polkit rule letting the logged-in user run only that helper, without a password |
+![Settings window](docs/settings-hotspot.png)
 
 ## Requirements
 
-- GNOME Shell 45–50 (tested on Ubuntu with GNOME 50)
-- A Wi-Fi card that can be a client and an access point at once. Check with
-  `iw list`: under *valid interface combinations* you need `managed` and `AP`
-  in the same line, e.g. `#{ managed } <= 1, #{ AP, ... } <= 1`.
-- Your Wi-Fi on 2.4 GHz or a non-DFS 5 GHz channel.
+- **GNOME Shell 45–50** (developed on Ubuntu with GNOME 50).
+- **A Wi-Fi card that can be a client and a hotspot at the same time.** Most
+  Intel cards can. Check with:
+
+  ```bash
+  iw list | grep -A4 'valid interface combinations'
+  ```
+
+  You need a line containing both `managed` and `AP`, for example
+  `#{ managed } <= 1, #{ AP, P2P-client, P2P-GO } <= 1`.
+- Your Wi-Fi on 2.4 GHz or a non-DFS 5 GHz channel (most home networks are).
 
 ## Install
 
 ```bash
-git clone https://github.com/Kumarsujay03/wifishare.git
-cd wifishare
+git clone https://github.com/Kumarsujay03/wifishare.git ~/wifishare
+cd ~/wifishare
 ./install.sh
 ```
 
-Log out and back in the first time so GNOME Shell finds the extension.
+The first time, **log out and back in** so GNOME Shell finds the extension.
+Then open Quick Settings and turn on **Share Wi-Fi**.
 
-The installer asks for sudo to install the helper, the polkit rule, a
-NetworkManager config file, `hostapd`/`dnsmasq-base`/`qrencode` if missing,
-and (if ufw is on) rules allowing DHCP, DNS and forwarding from `ap0`.
+The installer asks for your password (sudo) to install:
 
-## Updating
+- the root helper (`/usr/local/libexec/wifishare-helper`) and a polkit rule
+  that lets the logged-in user run only that helper without a password,
+- a NetworkManager config file telling it to leave `ap0` alone,
+- `hostapd`, `dnsmasq-base` and `qrencode` if they're missing,
+- if ufw is on, rules that let hotspot devices get an address, look up names
+  and reach the internet.
 
-The extension and `wifishare` command are symlinks into your checkout, so
-edits and pulls apply straight away (the extension after logging back in).
+Keep the cloned folder: the extension and the `wifishare` command run from it.
+
+## Update
 
 ```bash
 wifishare update
 ```
 
-pulls the repo and re-runs `install.sh`, which only asks for sudo when the
-helper or system config actually changed.
+This pulls the latest version from GitHub and reinstalls whatever changed.
+It only asks for sudo when the root helper or system config changed. If the
+Quick Settings part changed, log out and back in to load it.
+
+Check without installing anything: `wifishare update --check`, or
+**About → Updates → Check** in the settings window.
 
 ## Use
 
+From Quick Settings: click **Share Wi-Fi** to turn it on or off, and the
+arrow next to it for the menu (network name, password, band, connected
+devices, QR code, settings).
+
+From a terminal:
+
 ```bash
-wifishare on
-wifishare status
-wifishare set password 'something-long'
-wifishare clients
+wifishare on                     # start sharing
+wifishare status                 # on/off, band, channel, device count
+wifishare clients                # connected devices
+wifishare set ssid "My Laptop"   # network name
+wifishare set password 'a-long-password'
+wifishare set band auto          # auto, 2.4 or 5
 wifishare off
+wifishare version
 ```
 
-`wifishare clients` (and **Connected Devices** in the menu) lists each device
-with the name it sent over DHCP, its IP, MAC address, signal strength, how
-long it's been connected and how much data it has used. Phones usually use a
-random MAC per network, so it won't match the phone's hardware MAC (it
-matches the "randomized MAC" shown in the phone's settings for this network). Click a device in the menu to copy its IP.
-
-Name, password and band live in `~/.config/wifishare/config`. On first use
-you get `<User> Hotspot` and a random password; change them from the toggle's
-**Change Name & Password…**.
-
-That settings window has four tabs: **Hotspot** (on/off switch, where the
-internet comes from, name, password, band), **Join** (a large QR code and
-copy buttons for the name and password), **Devices** (the connected-devices
-list, live while the window is open) and **About**.
+On first use you get `<YourName> Hotspot` and a random password. They're
+stored in `~/.config/wifishare/config`.
 
 ### Band
 
-`wifishare set band auto|2.4|5` (or **Band** in Hotspot Settings).
+- **Same as Wi-Fi** (default): the hotspot uses your Wi-Fi connection's band
+  and channel.
+- **2.4 GHz / 5 GHz**: used when you're not on Wi-Fi (for example on
+  Ethernet). While you are on Wi-Fi, a single Wi-Fi card can only host on the
+  channel it's connected on, so a band that doesn't match is shown as
+  "(using 2.4 GHz)" and applies next time it can. To get a 5 GHz hotspot,
+  connect your laptop to a 5 GHz network.
 
-- **auto** (default): same band and channel as your Wi-Fi connection.
-- **2.4** / **5**: used when Wi-Fi isn't connected (e.g. you're on Ethernet),
-  on the first channel your card may start a network on. While you are on
-  Wi-Fi, most cards (including Intel) can only host on the connection's own
-  channel, so a band that doesn't match is refused with an explanation. To
-  get a 5 GHz hotspot over Wi-Fi, connect the laptop to a 5 GHz network.
-
-Two bands at once isn't possible with one card: that needs two radios, which
+Both bands at once isn't possible with one card; that needs two radios, which
 is what a dual-band router has.
+
+### Connected devices
+
+Each device shows the name it reported, its IP and MAC address, signal
+strength, how long it's been connected and how much it has downloaded and
+uploaded. Phones usually use a random MAC address per network, which matches
+the "randomized MAC" in the phone's settings for this network.
+
+## How it works
+
+Ubuntu's built-in hotspot uses your only Wi-Fi interface, so it has to
+disconnect you. wifishare adds a second, virtual interface (`ap0`) on the same
+card and runs the hotspot there:
+
+- **hostapd** broadcasts the network (WPA2) on the same channel as your Wi-Fi,
+- **dnsmasq** hands out `192.168.137.x` addresses and answers DNS,
+- an **nftables** table shares your connection with that subnet.
+
+NetworkManager is told to leave `ap0` alone, because it would bring it up as a
+Wi-Fi client first, which cards like Intel's refuse while already connected.
+
+| Path | Runs as | What it does |
+| --- | --- | --- |
+| `extension/` | you, in GNOME Shell | Quick Settings toggle and menu, settings window (`prefs.js`) |
+| `bin/wifishare` | you | the CLI the extension calls |
+| `helper/wifishare-helper` | root, via pkexec | creates/removes `ap0`, runs hostapd and dnsmasq, sets up sharing |
+| `helper/*.policy` | – | polkit rule for that one helper |
+| `install.sh` / `uninstall.sh` | you (+ sudo) | install, update, remove |
+
+The extension and the CLI are symlinked into your clone, so updates apply
+straight away. The root helper is copied and owned by root on purpose: a
+symlink would let anything that can edit your files run code as root.
+
+## Troubleshooting
+
+- **"Share Wi-Fi" isn't in Quick Settings**: log out and back in, then
+  `gnome-extensions enable wifishare@kumarsujay03.github.io`.
+- **It won't start**: run `wifishare on` in a terminal to see the error, and
+  check `cat /run/wifishare/hostapd.log`.
+- **Phones connect but have no internet**: if you use a firewall other than
+  ufw, allow DHCP (UDP 67), DNS (53) and forwarding from `ap0`.
+- **The hotspot dropped**: your Wi-Fi probably moved to another channel (for
+  example when switching access points). Turn it off and on again.
 
 ## Uninstall
 
 ```bash
+cd ~/wifishare
 ./uninstall.sh
 ```
 
+Your name, password and band settings in `~/.config/wifishare` are kept.
+
+## Contributing
+
+Contributions are welcome: bug reports, Wi-Fi cards you've tested, fixes and
+features. See [CONTRIBUTING.md](CONTRIBUTING.md).
+
 ## License
 
-MIT
+[MIT](LICENSE) © 2026 Sujay Kumar

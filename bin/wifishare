@@ -8,7 +8,8 @@
 #   wifishare set ssid|password|band <value>   band: auto, 2.4 or 5
 #   wifishare clients [--json]   connected devices: name, IP, MAC, signal
 #   wifishare qr                 print the path to a Wi-Fi QR code PNG
-#   wifishare update             git pull the repo and reinstall what changed
+#   wifishare update [--check]   git pull the repo and reinstall what changed
+#   wifishare version
 set -uo pipefail
 
 AP=ap0
@@ -16,6 +17,8 @@ RUN=/run/wifishare
 HELPER=/usr/local/libexec/wifishare-helper
 CONF_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/wifishare"
 CONF="$CONF_DIR/config"
+# This script is a symlink into the repo checkout.
+REPO=$(dirname "$(dirname "$(readlink -f "$0")")")
 
 die() { echo "wifishare: $*" >&2; exit 1; }
 
@@ -275,12 +278,33 @@ qr)
     fi
     echo "$file"
     ;;
-update)
-    # This script is a symlink into the repo checkout.
-    repo=$(dirname "$(dirname "$(readlink -f "$0")")")
-    git -C "$repo" pull --ff-only || die "git pull failed in $repo"
-    "$repo/install.sh"
+version)
+    echo "wifishare $(< "$REPO/VERSION") ($(git -C "$REPO" describe --tags --always --dirty 2>/dev/null || echo unknown))"
     ;;
--h|--help|help) sed -n '2,11s/^# \{0,1\}//p' "$0" ;;
+update)
+    git -C "$REPO" rev-parse --git-dir >/dev/null 2>&1 \
+        || die "$REPO is not a git checkout; reinstall from a git clone to get updates"
+    branch=$(git -C "$REPO" rev-parse --abbrev-ref HEAD)
+    git -C "$REPO" fetch --quiet --tags origin "$branch" || die "could not reach GitHub"
+    behind=$(git -C "$REPO" rev-list --count "HEAD..origin/$branch")
+    if [[ ${2:-} == --check ]]; then
+        if (( behind )); then
+            echo "Update available: $(git -C "$REPO" show "origin/$branch:VERSION" 2>/dev/null || echo newer) ($behind new commit(s)). Run: wifishare update"
+        else
+            echo "Up to date ($(< "$REPO/VERSION"))"
+        fi
+        exit 0
+    fi
+    if (( ! behind )); then
+        echo "Already up to date ($(< "$REPO/VERSION"))"
+        exit 0
+    fi
+    old=$(< "$REPO/VERSION")
+    git -C "$REPO" merge --ff-only --quiet "origin/$branch" \
+        || die "your checkout has local changes that conflict; commit or stash them first"
+    "$REPO/install.sh"
+    echo "Updated $old -> $(< "$REPO/VERSION")"
+    ;;
+-h|--help|help) awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print; next } NR > 1 { exit }' "$0" ;;
 *) die "unknown command: $cmd (try --help)" ;;
 esac

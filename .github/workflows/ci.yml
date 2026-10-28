@@ -1,0 +1,35 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Shell syntax
+        run: |
+          for f in bin/wifishare helper/wifishare-helper install.sh uninstall.sh; do
+            bash -n "$f"
+          done
+
+      - name: ShellCheck
+        run: shellcheck -S error bin/wifishare helper/wifishare-helper install.sh uninstall.sh
+
+      - name: JavaScript syntax
+        run: |
+          for f in extension/extension.js extension/prefs.js; do
+            cp "$f" "$RUNNER_TEMP/$(basename "$f" .js).mjs"
+            node --check "$RUNNER_TEMP/$(basename "$f" .js).mjs"
+          done
+
+      - name: Metadata and version
+        run: |
+          python3 -m json.tool extension/metadata.json > /dev/null
+          grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' VERSION
+
+      - name: polkit policy is valid XML
+        run: python3 -c "import xml.dom.minidom, sys; xml.dom.minidom.parse('helper/io.github.kumarsujay03.wifishare.policy')"

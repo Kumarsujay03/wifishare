@@ -159,13 +159,31 @@ export default class WifiSharePreferences extends ExtensionPreferences {
 
         const aboutGroup = new Adw.PreferencesGroup({title: 'Share Wi-Fi'});
         aboutPage.add(aboutGroup);
-        aboutGroup.add(new Adw.ActionRow({
-            title: 'Version',
-            subtitle: `${this.metadata.version}`,
-        }));
+        const versionRow = new Adw.ActionRow({title: 'Version', subtitle: '…'});
+        aboutGroup.add(versionRow);
+        run([cli, 'version']).then(r => {
+            versionRow.subtitle = r.ok ? r.out.replace(/^wifishare /, '') : 'unknown';
+        }).catch(() => {});
+
+        const updateRow = new Adw.ActionRow({
+            title: 'Updates',
+            subtitle: 'Get the latest version from GitHub',
+        });
+        const checkButton = new Gtk.Button({label: 'Check', valign: Gtk.Align.CENTER});
+        checkButton.connect('clicked', async () => {
+            checkButton.sensitive = false;
+            updateRow.subtitle = 'Checking…';
+            const r = await run([cli, 'update', '--check']).catch(e => ({ok: false, err: e.message}));
+            // Updating can need sudo (when the root helper changed), so it
+            // runs in a terminal rather than from here.
+            updateRow.subtitle = r.ok ? r.out : cleanError(r.err);
+            checkButton.sensitive = true;
+        });
+        updateRow.add_suffix(checkButton);
+        aboutGroup.add(updateRow);
         aboutGroup.add(new Adw.ActionRow({
             title: 'Command line',
-            subtitle: 'wifishare on · off · status · clients · update',
+            subtitle: 'wifishare on · off · status · clients · update · version',
             subtitle_selectable: true,
         }));
         const repoRow = new Adw.ActionRow({

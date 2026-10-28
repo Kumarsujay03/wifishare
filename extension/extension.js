@@ -11,6 +11,11 @@ import {Extension} from 'resource:///org/gnome/shell/extensions/extension.js';
 
 const ICON = 'network-wireless-hotspot-symbolic';
 const POLL_SECONDS = 5;
+const BANDS = [
+    ['auto', 'Same as Wi-Fi'],
+    ['2.4', '2.4 GHz'],
+    ['5', '5 GHz'],
+];
 
 function run(argv) {
     return new Promise((resolve, reject) => {
@@ -56,14 +61,25 @@ class ShareToggle extends QuickMenuToggle {
         this._passItem.connect('activate', () => copy(this._state.password));
         this.menu.addMenuItem(this._passItem);
 
-        this._qrItem = new PopupMenu.PopupBaseMenuItem({reactive: false, can_focus: false});
-        this._qrIcon = new St.Icon({icon_size: 168, x_expand: true, x_align: Clutter.ActorAlign.CENTER});
-        this._qrItem.add_child(this._qrIcon);
-        this._qrPath = null;
-        this.menu.addMenuItem(this._qrItem);
+        this._bandMenu = new PopupMenu.PopupSubMenuMenuItem('');
+        this._bandItems = BANDS.map(([band, label]) => {
+            const item = this._bandMenu.menu.addAction(label, () => this._setBand(band));
+            item._band = band;
+            return item;
+        });
+        this.menu.addMenuItem(this._bandMenu);
 
-        this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
-        this.menu.addAction('Hotspot Settings', () => this._ext.openPreferences());
+        this.menu.addAction('Change Name & Password…', () => this._ext.openPreferences());
+
+        // Collapsed by default so the menu stays short.
+        this._qrMenu = new PopupMenu.PopupSubMenuMenuItem('QR Code for Phones');
+        const qrItem = new PopupMenu.PopupBaseMenuItem({reactive: false, can_focus: false});
+        this._qrIcon = new St.Icon({icon_size: 168, x_expand: true, x_align: Clutter.ActorAlign.CENTER});
+        qrItem.add_child(this._qrIcon);
+        this._qrMenu.menu.addMenuItem(qrItem);
+        this._qrPath = null;
+        this.menu.addMenuItem(this._qrMenu);
+
 
         this.connect('clicked', () => this._toggle());
         this.menu.connect('open-state-changed', (_m, open) => {
@@ -87,6 +103,18 @@ class ShareToggle extends QuickMenuToggle {
             Main.notify('Share Wi-Fi', `Could not run wifishare: ${e.message}`);
         }
         this._busy = false;
+        await this._refresh();
+    }
+
+    async _setBand(band) {
+        try {
+            const res = await run([this._cli, 'set', 'band', band]);
+            const msg = res.ok ? res.out.split('\n').find(l => l.startsWith('Saved.')) : res.err.replace(/^wifishare: /, '');
+            if (msg)
+                Main.notify('Share Wi-Fi', msg);
+        } catch (e) {
+            Main.notify('Share Wi-Fi', `Could not run wifishare: ${e.message}`);
+        }
         await this._refresh();
     }
 
@@ -121,27 +149,35 @@ class ShareToggle extends QuickMenuToggle {
 
         this._ssidItem.label.text = `Network: ${s.ssid}`;
         this._passItem.label.text = `Password: ${s.password}`;
+
+        const band = BANDS.find(([b]) => b === s.band) ?? BANDS[0];
+        this._bandMenu.label.text = `Band: ${band[1]}`;
+        for (const item of this._bandItems) {
+            item.setOrnament(item._band === band[0]
+                ? PopupMenu.Ornament.CHECK ?? PopupMenu.Ornament.DOT
+                : PopupMenu.Ornament.NONE);
+        }
         this._updateQr();
     }
 
     async _updateQr() {
         if (!this._state.active) {
-            this._qrItem.visible = false;
+            this._qrMenu.visible = false;
             return;
         }
         try {
             const res = await run([this._cli, 'qr']);
             if (!res.ok) {
-                this._qrItem.visible = false;
+                this._qrMenu.visible = false;
                 return;
             }
             if (res.out !== this._qrPath) {
                 this._qrPath = res.out;
                 this._qrIcon.gicon = Gio.FileIcon.new(Gio.File.new_for_path(res.out));
             }
-            this._qrItem.visible = this._state.active;
+            this._qrMenu.visible = this._state.active;
         } catch {
-            this._qrItem.visible = false;
+            this._qrMenu.visible = false;
         }
     }
 

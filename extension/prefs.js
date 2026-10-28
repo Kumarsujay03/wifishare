@@ -133,10 +133,10 @@ export default class WifiSharePreferences extends ExtensionPreferences {
         const joinGroup = new Adw.PreferencesGroup();
         joinPage.add(joinGroup);
 
-        const qr = new Gtk.Picture({
-            content_fit: Gtk.ContentFit.CONTAIN,
-            width_request: 260,
-            height_request: 260,
+        // Gtk.Image keeps a fixed size; a Gtk.Picture would stretch to the
+        // window's width.
+        const qr = new Gtk.Image({
+            pixel_size: 220,
             halign: Gtk.Align.CENTER,
             margin_top: 6,
         });
@@ -229,7 +229,7 @@ export default class WifiSharePreferences extends ExtensionPreferences {
             qr.visible = true;
             if (res.out !== qrPath) {
                 qrPath = res.out;
-                qr.set_filename(qrPath);
+                qr.set_from_file(qrPath);
             }
         };
 

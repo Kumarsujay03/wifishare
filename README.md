@@ -77,8 +77,8 @@ wifishare off
 `wifishare clients` (and **Connected Devices** in the menu) lists each device
 with the name it sent over DHCP, its IP, MAC address, signal strength, how
 long it's been connected and how much data it has used. Phones usually use a
-random MAC per network, so the MAC won't match the one in their settings'
-"device MAC" field. Click a device in the menu to copy its IP.
+random MAC per network, so it won't match the phone's hardware MAC (it
+matches the "randomized MAC" shown in the phone's settings for this network). Click a device in the menu to copy its IP.
 
 Name, password and band live in `~/.config/wifishare/config`. On first use
 you get `<User> Hotspot` and a random password; change them from the toggle's

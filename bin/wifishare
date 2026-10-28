@@ -194,11 +194,15 @@ status)
     channel="" freq="" ghz=""
     [[ $active == true ]] && read -r channel freq < <(iw dev "$AP" info 2>/dev/null | awk '/channel/ {print $2, substr($3, 2)}')
     [[ -n $freq ]] && ghz=$(band_name "$freq")
+    # Where the internet comes from: the interface of the default route.
+    src_dev=$(ip route get 1.1.1.1 2>/dev/null | awk '{for (i = 1; i < NF; i++) if ($i == "dev") { print $(i + 1); exit }}')
+    src_name=""
+    [[ -n $src_dev ]] && src_name=$(nmcli -g GENERAL.CONNECTION device show "$src_dev" 2>/dev/null)
     if [[ ${2:-} == --json ]]; then
-        printf '{"active":%s,"ssid":%s,"password":%s,"band":%s,"clients":%d,"channel":%s,"ghz":%s,"devices":%s}\n' \
+        printf '{"active":%s,"ssid":%s,"password":%s,"band":%s,"clients":%d,"channel":%s,"ghz":%s,"source":%s,"source_dev":%s,"devices":%s}\n' \
             "$active" "$(json_str "$SSID")" "$(json_str "$PASSWORD")" "$(json_str "$BAND")" \
             "$clients" "${channel:-null}" "$(if [[ -n $ghz ]]; then json_str "$ghz"; else echo null; fi)" \
-            "$(clients_json)"
+            "$(json_str "$src_name")" "$(json_str "$src_dev")" "$(clients_json)"
     else
         if [[ $active == true ]]; then
             echo "On: \"$SSID\" on $ghz GHz, channel $channel, $clients device(s) connected"

@@ -82,7 +82,11 @@ matches the "randomized MAC" shown in the phone's settings for this network). Cl
 
 Name, password and band live in `~/.config/wifishare/config`. On first use
 you get `<User> Hotspot` and a random password; change them from the toggle's
-**Hotspot Settings**.
+**Change Name & Password…**.
+
+That settings window also has the on/off switch, where the internet comes
+from, a large QR code with copy buttons for the name and password, the
+connected-devices list (live while the window is open) and an About section.
 
 ### Band
 

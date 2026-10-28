@@ -5,7 +5,7 @@
 #   wifishare on | off | toggle
 #   wifishare status [--json]
 #   wifishare config [--json]
-#   wifishare set ssid|password <value>
+#   wifishare set ssid|password|band <value>   band: auto, 2.4 or 5
 #   wifishare qr                 print the path to a Wi-Fi QR code PNG
 #   wifishare update             git pull the repo and reinstall what changed
 set -uo pipefail
@@ -22,6 +22,7 @@ die() { echo "wifishare: $*" >&2; exit 1; }
 
 SSID=""
 PASSWORD=""
+BAND=auto   # auto (same as the Wi-Fi connection), 2.4 or 5
 
 load_config() {
     if [[ ! -f $CONF ]]; then
@@ -35,17 +36,21 @@ load_config() {
         case "${line%%=*}" in
             ssid) SSID="${line#*=}" ;;
             password) PASSWORD="${line#*=}" ;;
+            band) valid_band "${line#*=}" && BAND="${line#*=}" ;;
         esac
     done < "$CONF"
 }
 
 save_config() {
     mkdir -p "$CONF_DIR"
-    (umask 077; printf 'ssid=%s\npassword=%s\n' "$SSID" "$PASSWORD" > "$CONF")
+    (umask 077; printf 'ssid=%s\npassword=%s\nband=%s\n' "$SSID" "$PASSWORD" "$BAND" > "$CONF")
 }
 
 valid_ssid() { local n; n=$(printf '%s' "$1" | wc -c); (( n >= 1 && n <= 32 )) && [[ $1 != *$'\n'* ]]; }
 valid_password() { [[ $1 =~ ^[[:print:]]{8,63}$ ]]; }
+valid_band() { [[ $1 == auto || $1 == 2.4 || $1 == 5 ]]; }
+
+band_name() { if (( $1 < 3000 )); then echo 2.4; else echo 5; fi; }
 
 json_str() {
     local s=$1
@@ -75,6 +80,23 @@ is_active() {
     [[ -n $pid && -d /proc/$pid ]]
 }
 
+# First channel in a band (2.4 or 5) without no-IR, radar or disabled flags.
+# Prints "channel freq".
+free_channel() {
+    local lo=2400 hi=2500
+    [[ $2 == 5 ]] && lo=5150 hi=5900
+    iw phy "$1" channels 2>/dev/null | awk -v lo="$lo" -v hi="$hi" '
+        function flush() { if (ok) { print ch, f; ok = 0; exit } }
+        /\* [0-9]+ MHz \[/ {
+            flush()
+            f = $2; ch = $4; gsub(/[][]/, "", ch)
+            ok = (f >= lo && f <= hi && $0 !~ /disabled/)
+            next
+        }
+        /No IR|Radar detection/ { ok = 0 }
+        END { flush() }'
+}
+
 client_count() {
     [[ -e /sys/class/net/$AP ]] || { echo 0; return; }
     iw dev "$AP" station dump 2>/dev/null | grep -c '^Station' || true
@@ -87,27 +109,34 @@ turn_on() {
     valid_ssid "$SSID" || die "network name must be 1-32 bytes"
     valid_password "$PASSWORD" || die "password must be 8-63 printable characters"
 
-    local parent freq channel band
+    local parent phy freq channel band
     parent=$(parent_iface)
     [[ -n $parent ]] || die "no Wi-Fi adapter found"
+    phy=$(iw dev "$parent" info | awk '/wiphy/ {print "phy" $2}')
 
-    # A single radio can only sit on one channel, so the hotspot has to use
-    # whatever channel the Wi-Fi connection is on.
     read -r channel freq < <(iw dev "$parent" info | awk '/channel/ {print $2, substr($3, 2)}')
-    if [[ -z ${channel:-} ]]; then
-        channel=6 freq=2437
-    fi
-    if (( freq < 3000 )); then
-        band=g
-    elif (( freq < 5900 )); then
-        band=a
-        if iw phy "$(iw dev "$parent" info | awk '/wiphy/ {print "phy" $2}')" channels 2>/dev/null \
+    if [[ -n ${channel:-} ]]; then
+        # Connected over Wi-Fi: a single radio can only sit on one channel,
+        # so the hotspot has to use the connection's channel and band.
+        if (( freq >= 5900 )); then
+            die "sharing a 6 GHz connection isn't supported; connect on 2.4 or 5 GHz"
+        fi
+        if [[ $BAND != auto && $BAND != "$(band_name "$freq")" ]]; then
+            die "your Wi-Fi is on $(band_name "$freq") GHz, and this card can only host a hotspot on the same channel. Set the band to Auto, or connect to a $BAND GHz network or Ethernet"
+        fi
+        if (( freq > 3000 )) && iw phy "$phy" channels 2>/dev/null \
             | grep -A4 "MHz \[$channel\]" | grep -q 'Radar detection'; then
             die "your Wi-Fi is on DFS channel $channel, where a hotspot isn't allowed; connect on 2.4 GHz or a non-DFS 5 GHz channel"
         fi
     else
-        die "sharing a 6 GHz connection isn't supported; connect on 2.4 or 5 GHz"
+        # Wi-Fi not in use (e.g. on Ethernet): pick a channel in the chosen
+        # band that this card may start a network on.
+        local want=$BAND
+        [[ $want == auto ]] && want=2.4
+        read -r channel freq < <(free_channel "$phy" "$want")
+        [[ -n ${channel:-} ]] || die "no $want GHz channel here allows a hotspot"
     fi
+    if (( freq < 3000 )); then band=g; else band=a; fi
 
     # The name and password go over stdin so they don't show up in `ps`.
     local err
@@ -115,7 +144,7 @@ turn_on() {
             | pkexec "$HELPER" up "$parent" "$channel" "$band" 2>&1); then
         die "the hotspot didn't start: $(tail -n 3 <<< "$err" | tr '\n' ' ')"
     fi
-    echo "Sharing $parent as \"$SSID\" on channel $channel"
+    echo "Sharing $parent as \"$SSID\" on $(band_name "$freq") GHz, channel $channel"
 }
 
 turn_off() {
@@ -136,26 +165,30 @@ status)
     load_config
     active=false; is_active && active=true
     clients=$(client_count)
-    channel=""
-    [[ $active == true ]] && channel=$(iw dev "$AP" info 2>/dev/null | awk '/channel/ {print $2}')
+    channel="" freq="" ghz=""
+    [[ $active == true ]] && read -r channel freq < <(iw dev "$AP" info 2>/dev/null | awk '/channel/ {print $2, substr($3, 2)}')
+    [[ -n $freq ]] && ghz=$(band_name "$freq")
     if [[ ${2:-} == --json ]]; then
-        printf '{"active":%s,"ssid":%s,"password":%s,"clients":%d,"channel":%s}\n' \
-            "$active" "$(json_str "$SSID")" "$(json_str "$PASSWORD")" "$clients" "${channel:-null}"
+        printf '{"active":%s,"ssid":%s,"password":%s,"band":%s,"clients":%d,"channel":%s,"ghz":%s}\n' \
+            "$active" "$(json_str "$SSID")" "$(json_str "$PASSWORD")" "$(json_str "$BAND")" \
+            "$clients" "${channel:-null}" "$(if [[ -n $ghz ]]; then json_str "$ghz"; else echo null; fi)"
     else
         if [[ $active == true ]]; then
-            echo "On: \"$SSID\" on channel $channel, $clients device(s) connected"
+            echo "On: \"$SSID\" on $ghz GHz, channel $channel, $clients device(s) connected"
         else
             echo "Off"
         fi
         echo "Password: $PASSWORD"
+        echo "Band: $BAND"
     fi
     ;;
 config)
     load_config
     if [[ ${2:-} == --json ]]; then
-        printf '{"ssid":%s,"password":%s}\n' "$(json_str "$SSID")" "$(json_str "$PASSWORD")"
+        printf '{"ssid":%s,"password":%s,"band":%s}\n' \
+            "$(json_str "$SSID")" "$(json_str "$PASSWORD")" "$(json_str "$BAND")"
     else
-        printf 'ssid=%s\npassword=%s\n' "$SSID" "$PASSWORD"
+        printf 'ssid=%s\npassword=%s\nband=%s\n' "$SSID" "$PASSWORD" "$BAND"
     fi
     ;;
 set)
@@ -164,11 +197,22 @@ set)
     case "$key" in
         ssid) valid_ssid "$value" || die "network name must be 1-32 bytes"; SSID=$value ;;
         password) valid_password "$value" || die "password must be 8-63 printable characters"; PASSWORD=$value ;;
-        *) die "usage: wifishare set ssid|password <value>" ;;
+        band) valid_band "$value" || die "band must be auto, 2.4 or 5"; BAND=$value ;;
+        *) die "usage: wifishare set ssid|password|band <value>" ;;
     esac
     save_config
-    # Apply right away if the hotspot is running.
-    if is_active; then turn_off >/dev/null && turn_on; fi
+    # Apply right away if the hotspot is running, unless the new band can't
+    # be used while on this Wi-Fi connection; then keep it for next time.
+    if is_active; then
+        read -r _ freq < <(iw dev "$AP" info 2>/dev/null | awk '/channel/ {print $2, substr($3, 2)}')
+        parent=$(parent_iface)
+        if [[ $key == band && $BAND != auto && -n $freq && $BAND != "$(band_name "$freq")" ]] \
+            && iw dev "$parent" info | grep -q channel; then
+            echo "Saved. Your Wi-Fi is on $(band_name "$freq") GHz, so the hotspot stays there; $BAND GHz applies when you're on a $BAND GHz network or Ethernet."
+        else
+            turn_off >/dev/null && turn_on
+        fi
+    fi
     ;;
 qr)
     command -v qrencode >/dev/null || die "qrencode is not installed"

@@ -116,7 +116,8 @@ class ShareToggle extends QuickMenuToggle {
         if (s.active)
             status = s.clients === 1 ? '1 device' : `${s.clients} devices`;
         this.subtitle = s.active ? status : null;
-        this.menu.setHeader(ICON, 'Share Wi-Fi', s.active ? `On · ${status}` : 'Off');
+        this.menu.setHeader(ICON, 'Share Wi-Fi',
+            s.active ? `On · ${status} · ${s.ghz} GHz, channel ${s.channel}` : 'Off');
 
         this._ssidItem.label.text = `Network: ${s.ssid}`;
         this._passItem.label.text = `Password: ${s.password}`;

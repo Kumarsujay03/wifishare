@@ -1,5 +1,6 @@
 import Adw from 'gi://Adw';
 import Gio from 'gi://Gio';
+import Gtk from 'gi://Gtk';
 
 import {ExtensionPreferences} from 'resource:///org/gnome/Shell/Extensions/js/extensions/prefs.js';
 
@@ -35,5 +36,19 @@ export default class WifiSharePreferences extends ExtensionPreferences {
         };
         ssidRow.connect('apply', () => save('ssid', ssidRow));
         passRow.connect('apply', () => save('password', passRow));
+
+        const bands = ['auto', '2.4', '5'];
+        const bandRow = new Adw.ComboRow({
+            title: 'Band',
+            subtitle: 'While you’re on Wi-Fi, the hotspot can only use your connection’s band. 2.4 or 5 GHz applies on Ethernet or a network on that band.',
+            model: Gtk.StringList.new(['Same as Wi-Fi connection', '2.4 GHz', '5 GHz']),
+            selected: Math.max(0, bands.indexOf(config.band)),
+        });
+        bandRow.connect('notify::selected', () => {
+            const res = run([cli, 'set', 'band', bands[bandRow.selected]]);
+            const msg = res.ok ? res.out.split('\n').pop() || 'Saved' : res.err.replace(/^wifishare: /, '');
+            window.add_toast(new Adw.Toast({title: msg, timeout: 6}));
+        });
+        group.add(bandRow);
     }
 }

@@ -73,9 +73,23 @@ wifishare set password 'something-long'
 wifishare off
 ```
 
-Name and password live in `~/.config/wifishare/config`. On first use you get
-`<User> Hotspot` and a random password; change them from the toggle's
+Name, password and band live in `~/.config/wifishare/config`. On first use
+you get `<User> Hotspot` and a random password; change them from the toggle's
 **Hotspot Settings**.
+
+### Band
+
+`wifishare set band auto|2.4|5` (or **Band** in Hotspot Settings).
+
+- **auto** (default): same band and channel as your Wi-Fi connection.
+- **2.4** / **5**: used when Wi-Fi isn't connected (e.g. you're on Ethernet),
+  on the first channel your card may start a network on. While you are on
+  Wi-Fi, most cards (including Intel) can only host on the connection's own
+  channel, so a band that doesn't match is refused with an explanation. To
+  get a 5 GHz hotspot over Wi-Fi, connect the laptop to a 5 GHz network.
+
+Two bands at once isn't possible with one card: that needs two radios, which
+is what a dual-band router has.
 
 ## Uninstall
 

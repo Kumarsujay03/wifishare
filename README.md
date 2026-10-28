@@ -25,8 +25,8 @@ login.
 
 | Path | Runs as | What it does |
 | --- | --- | --- |
-| `extension/` | you, in GNOME Shell | Quick Settings toggle, menu (name, password, QR code, device count), settings window |
-| `bin/wifishare` | you | CLI the extension calls: `on`, `off`, `toggle`, `status`, `set`, `qr`, `update` |
+| `extension/` | you, in GNOME Shell | Quick Settings toggle, menu (name, password, band, connected devices, QR code), settings window |
+| `bin/wifishare` | you | CLI the extension calls: `on`, `off`, `toggle`, `status`, `clients`, `set`, `qr`, `update` |
 | `helper/wifishare-helper` | root, via pkexec | creates/removes `ap0`, runs hostapd + dnsmasq, sets up NAT |
 | `helper/*.policy` | – | polkit rule letting the logged-in user run only that helper, without a password |
 
@@ -70,8 +70,15 @@ helper or system config actually changed.
 wifishare on
 wifishare status
 wifishare set password 'something-long'
+wifishare clients
 wifishare off
 ```
+
+`wifishare clients` (and **Connected Devices** in the menu) lists each device
+with the name it sent over DHCP, its IP, MAC address, signal strength, how
+long it's been connected and how much data it has used. Phones usually use a
+random MAC per network, so the MAC won't match the one in their settings'
+"device MAC" field. Click a device in the menu to copy its IP.
 
 Name, password and band live in `~/.config/wifishare/config`. On first use
 you get `<User> Hotspot` and a random password; change them from the toggle's

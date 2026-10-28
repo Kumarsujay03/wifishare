@@ -6,6 +6,7 @@
 #   wifishare status [--json]
 #   wifishare config [--json]
 #   wifishare set ssid|password|band <value>   band: auto, 2.4 or 5
+#   wifishare clients [--json]   connected devices: name, IP, MAC, signal
 #   wifishare qr                 print the path to a Wi-Fi QR code PNG
 #   wifishare update             git pull the repo and reinstall what changed
 set -uo pipefail
@@ -97,6 +98,31 @@ free_channel() {
         END { flush() }'
 }
 
+# Connected devices as a JSON array: stations from hostapd joined with
+# dnsmasq's DHCP leases (for the IP and the name the device sent).
+clients_json() {
+    [[ -e /sys/class/net/$AP ]] || { echo '[]'; return; }
+    iw dev "$AP" station dump 2>/dev/null | awk -v leases="$RUN/leases" '
+        function esc(v) { gsub(/\\/, "\\\\", v); gsub(/"/, "\\\"", v); return v }
+        function out() {
+            s = s (n++ ? "," : "") sprintf("{\"mac\":\"%s\",\"ip\":\"%s\",\"name\":\"%s\",\"signal\":%s,\"connected\":%s,\"rx\":%s,\"tx\":%s}",
+                mac, ip[mac], esc(nm[mac]), sig == "" ? "null" : sig, t == "" ? 0 : t, rx == "" ? 0 : rx, tx == "" ? 0 : tx)
+        }
+        BEGIN {
+            while ((getline l < leases) > 0) {
+                split(l, a, " ")
+                ip[a[2]] = a[3]
+                nm[a[2]] = a[4] == "*" ? "" : a[4]
+            }
+        }
+        /^Station/ { if (mac) out(); mac = $2; sig = t = rx = tx = "" }
+        /^\tsignal:/ { sig = $2 }
+        /^\tconnected time:/ { t = $3 }
+        /^\trx bytes:/ { rx = $3 }
+        /^\ttx bytes:/ { tx = $3 }
+        END { if (mac) out(); print "[" s "]" }'
+}
+
 client_count() {
     [[ -e /sys/class/net/$AP ]] || { echo 0; return; }
     iw dev "$AP" station dump 2>/dev/null | grep -c '^Station' || true
@@ -169,9 +195,10 @@ status)
     [[ $active == true ]] && read -r channel freq < <(iw dev "$AP" info 2>/dev/null | awk '/channel/ {print $2, substr($3, 2)}')
     [[ -n $freq ]] && ghz=$(band_name "$freq")
     if [[ ${2:-} == --json ]]; then
-        printf '{"active":%s,"ssid":%s,"password":%s,"band":%s,"clients":%d,"channel":%s,"ghz":%s}\n' \
+        printf '{"active":%s,"ssid":%s,"password":%s,"band":%s,"clients":%d,"channel":%s,"ghz":%s,"devices":%s}\n' \
             "$active" "$(json_str "$SSID")" "$(json_str "$PASSWORD")" "$(json_str "$BAND")" \
-            "$clients" "${channel:-null}" "$(if [[ -n $ghz ]]; then json_str "$ghz"; else echo null; fi)"
+            "$clients" "${channel:-null}" "$(if [[ -n $ghz ]]; then json_str "$ghz"; else echo null; fi)" \
+            "$(clients_json)"
     else
         if [[ $active == true ]]; then
             echo "On: \"$SSID\" on $ghz GHz, channel $channel, $clients device(s) connected"
@@ -180,6 +207,22 @@ status)
         fi
         echo "Password: $PASSWORD"
         echo "Band: $BAND"
+    fi
+    ;;
+clients)
+    if [[ ${2:-} == --json ]]; then
+        clients_json
+    else
+        clients_json | python3 -c '
+import json, sys
+devs = json.load(sys.stdin)
+if not devs:
+    print("No devices connected")
+for d in devs:
+    m, s = divmod(d["connected"], 60)
+    name, ip = d["name"] or "(no name)", d["ip"] or "-"
+    print(f"{name:20} {ip:16} {d["mac"]}  {d["signal"]} dBm  {m}m{s:02d}s  down {d["tx"]/1e6:.1f} MB  up {d["rx"]/1e6:.1f} MB")
+'
     fi
     ;;
 config)

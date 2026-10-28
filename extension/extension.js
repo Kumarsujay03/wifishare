@@ -43,6 +43,40 @@ function copy(text) {
     St.Clipboard.get_default().set_text(St.ClipboardType.CLIPBOARD, text);
 }
 
+function formatBytes(n) {
+    if (n >= 1e9)
+        return `${(n / 1e9).toFixed(1)} GB`;
+    if (n >= 1e6)
+        return `${(n / 1e6).toFixed(1)} MB`;
+    return `${Math.round(n / 1e3)} KB`;
+}
+
+function formatDuration(sec) {
+    const h = Math.floor(sec / 3600), m = Math.floor(sec / 60) % 60;
+    if (h)
+        return `${h} h ${m} min`;
+    return m ? `${m} min` : `${sec} s`;
+}
+
+// One connected device: its name on top, details dimmed underneath.
+// Clicking copies the IP address.
+const DeviceItem = GObject.registerClass(
+class DeviceItem extends PopupMenu.PopupBaseMenuItem {
+    _init(dev) {
+        super._init();
+        const box = vbox({x_expand: true});
+        box.add_child(new St.Label({text: dev.name || 'Unnamed device'}));
+        const signal = dev.signal === null ? '' : ` · ${dev.signal} dBm`;
+        box.add_child(new St.Label({
+            text: `${dev.ip || 'no IP yet'} · ${dev.mac}${signal}\n` +
+                `${formatDuration(dev.connected)} · ↓ ${formatBytes(dev.tx)} ↑ ${formatBytes(dev.rx)}`,
+            style: 'font-size: 0.85em; opacity: 0.7;',
+        }));
+        this.add_child(box);
+        this.connect('activate', () => copy(dev.ip || dev.mac));
+    }
+});
+
 function vbox(params) {
     const box = new St.BoxLayout(params);
     if ('orientation' in box)
@@ -97,18 +131,25 @@ class ShareToggle extends QuickMenuToggle {
         this._passItem.connect('activate', () => copy(this._state.password));
         this.menu.addMenuItem(this._passItem);
 
+        this._devicesMenu = new PopupMenu.PopupSubMenuMenuItem('');
+        this.menu.addMenuItem(this._devicesMenu);
+        this._devicesKey = null;
+
         this._bandMenu = new PopupMenu.PopupSubMenuMenuItem('');
         this._bandItems = BANDS.map(([band, label]) => {
             const item = this._bandMenu.menu.addAction(label, () => this._setBand(band));
             item._band = band;
             return item;
         });
+        this._bandNote = new PopupMenu.PopupMenuItem('', {reactive: false});
+        this._bandNote.label.clutter_text.line_wrap = true;
+        this._bandNote.label.style = 'font-size: 0.85em; opacity: 0.7;';
+        this._bandMenu.menu.addMenuItem(this._bandNote);
         this.menu.addMenuItem(this._bandMenu);
 
         this.menu.addAction('Change Name & Password…', () => this._ext.openPreferences());
 
         this._qrItem = this.menu.addAction('Show QR Code for Phones…', () => this._showQr());
-
 
         this.connect('clicked', () => this._toggle());
         this.menu.connect('open-state-changed', (_m, open) => {
@@ -180,13 +221,43 @@ class ShareToggle extends QuickMenuToggle {
         this._passItem.label.text = `Password: ${s.password}`;
 
         const band = BANDS.find(([b]) => b === s.band) ?? BANDS[0];
-        this._bandMenu.label.text = `Band: ${band[1]}`;
+        // While on Wi-Fi the card can only host on the connection's band.
+        const mismatch = s.active && band[0] !== 'auto' && band[0] !== s.ghz;
+        this._bandMenu.label.text = mismatch
+            ? `Band: ${band[1]} (using ${s.ghz} GHz)`
+            : `Band: ${band[1]}`;
+        this._bandNote.visible = mismatch;
+        this._bandNote.label.text = mismatch
+            ? `Your Wi-Fi is on ${s.ghz} GHz, and this card can only host on the same channel. ` +
+              `${band[1]} is used when you connect to a ${band[1]} network or use Ethernet.`
+            : '';
+        this._updateDevices();
         for (const item of this._bandItems) {
             item.setOrnament(item._band === band[0]
                 ? PopupMenu.Ornament.CHECK ?? PopupMenu.Ornament.DOT
                 : PopupMenu.Ornament.NONE);
         }
         this._qrItem.visible = s.active;
+    }
+
+    _updateDevices() {
+        const devices = this._state.active ? this._state.devices ?? [] : [];
+        this._devicesMenu.visible = this._state.active;
+        this._devicesMenu.label.text = `Connected Devices (${devices.length})`;
+
+        // Rebuild only when something changed (signal and data counters
+        // usually do, so an open list refreshes with each poll).
+        const key = JSON.stringify(devices);
+        if (key === this._devicesKey)
+            return;
+        this._devicesKey = key;
+        this._devicesMenu.menu.removeAll();
+        if (!devices.length) {
+            this._devicesMenu.menu.addMenuItem(
+                new PopupMenu.PopupMenuItem('No devices connected', {reactive: false}));
+        }
+        for (const dev of devices)
+            this._devicesMenu.menu.addMenuItem(new DeviceItem(dev));
     }
 
     async _showQr() {

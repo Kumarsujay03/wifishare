@@ -6,6 +6,7 @@ import Clutter from 'gi://Clutter';
 
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
+import * as ModalDialog from 'resource:///org/gnome/shell/ui/modalDialog.js';
 import {QuickMenuToggle, SystemIndicator} from 'resource:///org/gnome/shell/ui/quickSettings.js';
 import {Extension} from 'resource:///org/gnome/shell/extensions/extension.js';
 
@@ -42,6 +43,41 @@ function copy(text) {
     St.Clipboard.get_default().set_text(St.ClipboardType.CLIPBOARD, text);
 }
 
+function vbox(params) {
+    const box = new St.BoxLayout(params);
+    if ('orientation' in box)
+        box.orientation = Clutter.Orientation.VERTICAL;
+    else
+        box.vertical = true;
+    return box;
+}
+
+// Shown in the middle of the screen: the Quick Settings menu is too short
+// to fit a scannable QR code.
+const QrDialog = GObject.registerClass(
+class QrDialog extends ModalDialog.ModalDialog {
+    _init(qrPath, ssid, password) {
+        super._init({destroyOnClose: true});
+        const box = vbox({x_align: Clutter.ActorAlign.CENTER, style: 'spacing: 12px;'});
+        box.add_child(new St.Label({
+            text: 'Scan to join',
+            x_align: Clutter.ActorAlign.CENTER,
+            style: 'font-weight: bold; font-size: 1.4em;',
+        }));
+        box.add_child(new St.Icon({
+            gicon: Gio.FileIcon.new(Gio.File.new_for_path(qrPath)),
+            icon_size: 280,
+            x_align: Clutter.ActorAlign.CENTER,
+        }));
+        box.add_child(new St.Label({
+            text: `Network: ${ssid}\nPassword: ${password}`,
+            x_align: Clutter.ActorAlign.CENTER,
+        }));
+        this.contentLayout.add_child(box);
+        this.addButton({label: 'Close', action: () => this.close(), key: Clutter.KEY_Escape, default: true});
+    }
+});
+
 const ShareToggle = GObject.registerClass(
 class ShareToggle extends QuickMenuToggle {
     _init(ext) {
@@ -71,14 +107,7 @@ class ShareToggle extends QuickMenuToggle {
 
         this.menu.addAction('Change Name & Password…', () => this._ext.openPreferences());
 
-        // Collapsed by default so the menu stays short.
-        this._qrMenu = new PopupMenu.PopupSubMenuMenuItem('QR Code for Phones');
-        const qrItem = new PopupMenu.PopupBaseMenuItem({reactive: false, can_focus: false});
-        this._qrIcon = new St.Icon({icon_size: 168, x_expand: true, x_align: Clutter.ActorAlign.CENTER});
-        qrItem.add_child(this._qrIcon);
-        this._qrMenu.menu.addMenuItem(qrItem);
-        this._qrPath = null;
-        this.menu.addMenuItem(this._qrMenu);
+        this._qrItem = this.menu.addAction('Show QR Code for Phones…', () => this._showQr());
 
 
         this.connect('clicked', () => this._toggle());
@@ -157,27 +186,20 @@ class ShareToggle extends QuickMenuToggle {
                 ? PopupMenu.Ornament.CHECK ?? PopupMenu.Ornament.DOT
                 : PopupMenu.Ornament.NONE);
         }
-        this._updateQr();
+        this._qrItem.visible = s.active;
     }
 
-    async _updateQr() {
-        if (!this._state.active) {
-            this._qrMenu.visible = false;
-            return;
-        }
+    async _showQr() {
+        Main.panel.statusArea.quickSettings.menu.close();
         try {
             const res = await run([this._cli, 'qr']);
             if (!res.ok) {
-                this._qrMenu.visible = false;
+                Main.notify('Share Wi-Fi', res.err.replace(/^wifishare: /, '') || 'Could not make the QR code');
                 return;
             }
-            if (res.out !== this._qrPath) {
-                this._qrPath = res.out;
-                this._qrIcon.gicon = Gio.FileIcon.new(Gio.File.new_for_path(res.out));
-            }
-            this._qrMenu.visible = this._state.active;
-        } catch {
-            this._qrMenu.visible = false;
+            new QrDialog(res.out, this._state.ssid, this._state.password).open();
+        } catch (e) {
+            Main.notify('Share Wi-Fi', `Could not run wifishare: ${e.message}`);
         }
     }
 

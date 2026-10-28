@@ -221,10 +221,10 @@ qr)
     payload="WIFI:T:WPA;S:$(esc "$SSID");P:$(esc "$PASSWORD");;"
     dir="${XDG_RUNTIME_DIR:-/tmp}/wifishare"
     mkdir -p "$dir"
-    file="$dir/qr-$(printf '%s' "$payload" | sha1sum | cut -c1-12).png"
+    file="$dir/qr-$(printf '%s' "s12$payload" | sha1sum | cut -c1-12).png"
     if [[ ! -f $file ]]; then
         rm -f "$dir"/qr-*.png
-        qrencode -o "$file" -s 6 -m 2 -l M "$payload" || die "could not make the QR code"
+        qrencode -o "$file" -s 12 -m 2 -l M "$payload" || die "could not make the QR code"
     fi
     echo "$file"
     ;;

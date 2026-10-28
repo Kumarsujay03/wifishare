@@ -84,9 +84,10 @@ Name, password and band live in `~/.config/wifishare/config`. On first use
 you get `<User> Hotspot` and a random password; change them from the toggle's
 **Change Name & Password…**.
 
-That settings window also has the on/off switch, where the internet comes
-from, a large QR code with copy buttons for the name and password, the
-connected-devices list (live while the window is open) and an About section.
+That settings window has four tabs: **Hotspot** (on/off switch, where the
+internet comes from, name, password, band), **Join** (a large QR code and
+copy buttons for the name and password), **Devices** (the connected-devices
+list, live while the window is open) and **About**.
 
 ### Band
 

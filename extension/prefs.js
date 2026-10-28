@@ -77,11 +77,16 @@ function copyButton(window, getText, what) {
 export default class WifiSharePreferences extends ExtensionPreferences {
     async fillPreferencesWindow(window) {
         const cli = `${this.path}/wifishare`;
-        window.set_default_size(680, 860);
+        window.set_default_size(680, 760);
         window.search_enabled = false;
 
-        const page = new Adw.PreferencesPage();
-        window.add(page);
+        // One tab per job: running it, joining it, who's on it, about.
+        const page = new Adw.PreferencesPage({title: 'Hotspot', icon_name: 'network-wireless-hotspot-symbolic'});
+        const joinPage = new Adw.PreferencesPage({title: 'Join', icon_name: 'phone-symbolic'});
+        const devicesPage = new Adw.PreferencesPage({title: 'Devices', icon_name: 'network-workgroup-symbolic'});
+        const aboutPage = new Adw.PreferencesPage({title: 'About', icon_name: 'help-about-symbolic'});
+        for (const p of [page, joinPage, devicesPage, aboutPage])
+            window.add(p);
 
         // --- Status --------------------------------------------------------
 
@@ -119,20 +124,23 @@ export default class WifiSharePreferences extends ExtensionPreferences {
 
         // --- Join ----------------------------------------------------------
 
-        const joinGroup = new Adw.PreferencesGroup({
+        // The QR code gets a group of its own so it sits above the rows.
+        const qrGroup = new Adw.PreferencesGroup({
             title: 'Join from a Phone',
-            description: 'Point the phone’s camera at the code, or type the name and password.',
+            description: 'Point the phone’s camera at the code, or type the name and password below.',
         });
-        page.add(joinGroup);
+        joinPage.add(qrGroup);
+        const joinGroup = new Adw.PreferencesGroup();
+        joinPage.add(joinGroup);
 
         const qr = new Gtk.Picture({
             content_fit: Gtk.ContentFit.CONTAIN,
             width_request: 260,
             height_request: 260,
             halign: Gtk.Align.CENTER,
-            margin_bottom: 12,
+            margin_top: 6,
         });
-        joinGroup.add(qr);
+        qrGroup.add(qr);
 
         const joinNameRow = new Adw.ActionRow({title: 'Network', subtitle_selectable: true});
         const joinPassRow = new Adw.ActionRow({title: 'Password', subtitle_selectable: true});
@@ -144,13 +152,13 @@ export default class WifiSharePreferences extends ExtensionPreferences {
         // --- Devices -------------------------------------------------------
 
         const devicesGroup = new Adw.PreferencesGroup({title: 'Connected Devices'});
-        page.add(devicesGroup);
+        devicesPage.add(devicesGroup);
         let deviceRows = [];
 
         // --- About ---------------------------------------------------------
 
-        const aboutGroup = new Adw.PreferencesGroup({title: 'About'});
-        page.add(aboutGroup);
+        const aboutGroup = new Adw.PreferencesGroup({title: 'Share Wi-Fi'});
+        aboutPage.add(aboutGroup);
         aboutGroup.add(new Adw.ActionRow({
             title: 'Version',
             subtitle: `${this.metadata.version}`,
@@ -183,6 +191,7 @@ export default class WifiSharePreferences extends ExtensionPreferences {
                 devicesGroup.remove(row);
             deviceRows = [];
 
+            devicesPage.title = state.active && devices.length ? `Devices (${devices.length})` : 'Devices';
             if (!state.active) {
                 devicesGroup.description = 'Turn on the hotspot to see who’s connected.';
                 return;

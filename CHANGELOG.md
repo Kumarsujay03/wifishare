@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.1.1 — 2026-10-29
+
+- **`wifishare: command not found` fixed**: the installer now adds
+  `~/.local/bin` to your PATH when it's missing (fish, bash and zsh), so the
+  command works in new terminals. Before, the command was missing in fish,
+  and on a fresh Ubuntu install until you logged out and back in.
+- `wifishare doctor` checks that the command is on your PATH.
+
 ## 1.1.0 — 2026-10-29
 
 - **Works when your Wi-Fi is on a channel that can't host a hotspot**

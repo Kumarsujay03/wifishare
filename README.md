@@ -70,6 +70,9 @@ The installer asks for your password (sudo) to install:
   and reach the internet; if firewalld is on, it puts `ap0` in the
   `nm-shared` zone.
 
+It also adds `~/.local/bin` to your PATH if it's missing, so open a new
+terminal before using the `wifishare` command.
+
 Keep the cloned folder: the extension and the `wifishare` command run from it.
 
 ## Update
@@ -170,6 +173,9 @@ installed parts and the firewall, and says what to change.
   36–48 or 149–165, or use Ethernet.
 - **"can't run a hotspot while connected to Wi-Fi"**: the card doesn't
   support it. Share from Ethernet instead, or try a newer kernel.
+- **`wifishare: command not found`**: open a new terminal. If it still
+  happens, run `~/wifishare/install.sh` again, or add it yourself:
+  `fish_add_path ~/.local/bin` in fish, or log out and back in in bash.
 - **"Share Wi-Fi" isn't in Quick Settings**: log out and back in, then
   `gnome-extensions enable wifishare@kumarsujay03.github.io`.
 - **It won't start**: run `wifishare on` in a terminal to see the error, and

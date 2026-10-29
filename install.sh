@@ -98,6 +98,32 @@ done
 ln -sfn "$REPO/bin/wifishare" "$EXT_DIR/wifishare"
 ln -sfn "$REPO/bin/wifishare" "$HOME/.local/bin/wifishare"
 
+# Make sure terminals find the wifishare command. fish doesn't read ~/.profile,
+# and Ubuntu's ~/.profile only adds ~/.local/bin if it existed at login.
+case ":$PATH:" in
+*":$HOME/.local/bin:"*) ;;
+*)
+    if command -v fish >/dev/null; then
+        fish -c 'fish_add_path -U ~/.local/bin' 2>/dev/null ||
+            fish -c 'contains ~/.local/bin $fish_user_paths; or set -U fish_user_paths ~/.local/bin $fish_user_paths'
+    fi
+    for rc in "$HOME/.bashrc" "$HOME/.zshrc"; do
+        case "$rc" in
+        *bashrc) [[ -f $rc || ${SHELL##*/} == bash ]] || continue ;;
+        *zshrc) [[ -f $rc || ${SHELL##*/} == zsh ]] || continue ;;
+        esac
+        grep -qs '# wifishare: ~/.local/bin' "$rc" && continue
+        cat >>"$rc" <<'EOF'
+
+# wifishare: ~/.local/bin on PATH
+case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) PATH="$HOME/.local/bin:$PATH" ;; esac
+EOF
+    done
+    echo
+    echo "Added ~/.local/bin to your PATH. Open a new terminal to use the wifishare command."
+    ;;
+esac
+
 if ! gnome-extensions info "$UUID" >/dev/null 2>&1; then
     echo
     echo "Log out and back in so GNOME Shell finds the extension, then run:"

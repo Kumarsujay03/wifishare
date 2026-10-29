@@ -4,6 +4,6 @@
   "description": "Quick Settings toggle that shares your current Wi-Fi connection through a hotspot, like Windows Mobile Hotspot. Requires the wifishare helper (see install.sh).",
   "shell-version": ["45", "46", "47", "48", "49", "50"],
   "url": "https://github.com/Kumarsujay03/wifishare",
-  "version": 4,
-  "version-name": "1.1.0"
+  "version": 5,
+  "version-name": "1.1.1"
 }

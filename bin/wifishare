@@ -495,6 +495,11 @@ doctor)
     fi
 
     echo "Installed parts"
+    if command -v wifishare >/dev/null; then
+        ok "wifishare command on PATH"
+    else
+        warn "wifishare command isn't on PATH (run install.sh, then open a new terminal)"
+    fi
     for t in hostapd dnsmasq iw nft pkexec qrencode; do
         if command -v "$t" >/dev/null || [[ -x /usr/sbin/$t ]]; then ok "$t"; else bad "$t is missing (run install.sh)"; fi
     done

@@ -1,5 +1,26 @@
 # Changelog
 
+## 1.1.0 — 2026-10-29
+
+- **Works when your Wi-Fi is on a channel that can't host a hotspot**
+  (radar-protected DFS channels, 6 GHz, or channels the card marks No-IR):
+  wifishare now moves your Wi-Fi to the same network's 2.4 GHz band while
+  sharing, and releases it when you turn sharing off. Before, it just
+  showed an error.
+- **Band choice is kept and works more often**: choosing 2.4 or 5 GHz now
+  reconnects your Wi-Fi on that band of the same network when the card needs
+  it. If that's not possible, the hotspot keeps running on your Wi-Fi's band.
+- Cards that can run the hotspot on a different channel from the Wi-Fi
+  connection now use a free channel instead of failing.
+- New `wifishare doctor` checks the Wi-Fi card, the current channel, the
+  installed parts and the firewall; the installer runs it at the end.
+- Installer supports apt, dnf, pacman and zypper, and firewalld.
+- Root helper picks another subnet if 192.168.137.x is taken, works with
+  drivers that can't set the MAC while adding the interface, and passes the
+  country to hostapd when known.
+- Settings: **Switch Wi-Fi band when needed** option and the real hotspot
+  address. Clearer error messages that say what to change.
+
 ## 1.0.0 — 2026-10-28
 
 First release.

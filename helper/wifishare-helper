@@ -13,7 +13,8 @@ set -euo pipefail
 
 AP=ap0
 RUN=/run/wifishare
-NET=192.168.137
+# Subnets to try, in order; the first one no other network uses wins.
+NETS=(192.168.137 192.168.138 10.42.137 172.30.137)
 TABLE=wifishare
 
 stop_pid() {
@@ -52,28 +53,37 @@ up() {
     (( ${#ssid} >= 1 && ${#ssid} <= 32 )) || { echo "bad network name" >&2; exit 2; }
     [[ $password =~ ^[[:print:]]{8,63}$ ]] || { echo "bad password" >&2; exit 2; }
 
-    if ip -4 addr | grep -q "inet $NET\."; then
-        if [[ ! -e /sys/class/net/$AP ]]; then
-            echo "$NET.0/24 is already used by another network" >&2; exit 1
-        fi
-    fi
-
     # Start from a clean slate if a previous run was left behind.
     down
+
+    local NET="" n
+    for n in "${NETS[@]}"; do
+        if ! ip -4 route show | grep -q "^$n\."; then NET=$n; break; fi
+    done
+    [[ -n $NET ]] || { echo "no free subnet for the hotspot" >&2; exit 1; }
     mkdir -m 755 "$RUN"
     trap 'down' ERR
 
     # Same MAC as the parent, but locally administered and with the last bit
     # flipped, so the two interfaces never collide.
-    local o first last mac
+    local o first last mac country
     IFS=: read -ra o < "/sys/class/net/$parent/address"
     first=$(printf '%02x' $(( 0x${o[0]} | 0x02 )))
     last=$(printf '%02x' $(( 0x${o[5]} ^ 0x01 )))
     mac="$first:${o[1]}:${o[2]}:${o[3]}:${o[4]}:$last"
 
-    iw dev "$parent" interface add "$AP" type __ap addr "$mac"
+    # Some drivers can't set the address while adding the interface.
+    if ! iw dev "$parent" interface add "$AP" type __ap addr "$mac" 2>/dev/null; then
+        iw dev "$parent" interface add "$AP" type __ap
+        ip link set dev "$AP" address "$mac" 2>/dev/null || true
+    fi
     nmcli device set "$AP" managed no 2>/dev/null || true
     ip addr add "$NET.1/24" dev "$AP"
+
+    # Tell hostapd the country if the system already knows it; some drivers
+    # only allow 5 GHz access points with one set.
+    country=$(iw reg get 2>/dev/null | awk '/^country/ {sub(":", "", $2); print $2; exit}')
+    [[ $country =~ ^[A-Z]{2}$ ]] || country=""
 
     (
         umask 077
@@ -91,6 +101,7 @@ wpa=2
 wpa_key_mgmt=WPA-PSK
 rsn_pairwise=CCMP
 wpa_passphrase=$password
+${country:+country_code=$country}
 EOF
     )
     hostapd -B -P "$RUN/hostapd.pid" "$RUN/hostapd.conf" > "$RUN/hostapd.log" 2>&1 || {

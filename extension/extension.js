@@ -167,8 +167,11 @@ class ShareToggle extends QuickMenuToggle {
         this.subtitle = this._state.active ? 'Turning off…' : 'Turning on…';
         try {
             const res = await run([this._cli, this._state.active ? 'off' : 'on']);
+            const note = res.out.split('\n').find(l => l.startsWith('Note: '));
             if (!res.ok)
                 Main.notify('Share Wi-Fi', res.err.replace(/^wifishare: /, '') || 'Something went wrong');
+            else if (note)
+                Main.notify('Share Wi-Fi', note.slice(6));
         } catch (e) {
             Main.notify('Share Wi-Fi', `Could not run wifishare: ${e.message}`);
         }
@@ -179,7 +182,7 @@ class ShareToggle extends QuickMenuToggle {
     async _setBand(band) {
         try {
             const res = await run([this._cli, 'set', 'band', band]);
-            const msg = res.ok ? res.out.split('\n').find(l => l.startsWith('Saved.')) : res.err.replace(/^wifishare: /, '');
+            const msg = res.ok ? res.out.split('\n').find(l => l.startsWith('Saved.') || l.startsWith('Note: '))?.replace(/^Note: /, '') : res.err.replace(/^wifishare: /, '');
             if (msg)
                 Main.notify('Share Wi-Fi', msg);
         } catch (e) {
@@ -228,8 +231,8 @@ class ShareToggle extends QuickMenuToggle {
             : `Band: ${band[1]}`;
         this._bandNote.visible = mismatch;
         this._bandNote.label.text = mismatch
-            ? `Your Wi-Fi is on ${s.ghz} GHz, and this card can only host on the same channel. ` +
-              `${band[1]} is used when you connect to a ${band[1]} network or use Ethernet.`
+            ? `Your network isn't available on ${band[1]} here, so the hotspot follows your ` +
+              `Wi-Fi on ${s.ghz} GHz. ${band[1]} is used when it can be (another network or Ethernet).`
             : '';
         this._updateDevices();
         for (const item of this._bandItems) {

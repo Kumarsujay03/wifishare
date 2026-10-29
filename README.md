@@ -30,17 +30,20 @@ Settings, and you **stay connected to your Wi-Fi the whole time**.
 
 ## Requirements
 
-- **GNOME Shell 45–50** (developed on Ubuntu with GNOME 50).
-- **A Wi-Fi card that can be a client and a hotspot at the same time.** Most
-  Intel cards can. Check with:
+- **GNOME Shell 45–50** with **NetworkManager** (Ubuntu, Fedora, Debian,
+  Arch, openSUSE…). The processor (Intel or AMD) doesn't matter.
+- **A Wi-Fi card that can be connected to Wi-Fi and run a hotspot at the same
+  time.** Most Intel cards can; many MediaTek and Realtek cards can on recent
+  kernels. After installing, `wifishare doctor` tells you whether yours can.
+  Without the installer, check with:
 
   ```bash
   iw list | grep -A4 'valid interface combinations'
   ```
 
   You need a line containing both `managed` and `AP`, for example
-  `#{ managed } <= 1, #{ AP, P2P-client, P2P-GO } <= 1`.
-- Your Wi-Fi on 2.4 GHz or a non-DFS 5 GHz channel (most home networks are).
+  `#{ managed } <= 1, #{ AP, P2P-client, P2P-GO } <= 1`. If there isn't one,
+  you can still share an **Ethernet** connection over Wi-Fi.
 
 ## Install
 
@@ -53,14 +56,19 @@ cd ~/wifishare
 The first time, **log out and back in** so GNOME Shell finds the extension.
 Then open Quick Settings and turn on **Share Wi-Fi**.
 
+The installer finishes by running `wifishare doctor`, which checks your
+Wi-Fi card and setup and tells you what to fix if anything's missing.
+
 The installer asks for your password (sudo) to install:
 
 - the root helper (`/usr/local/libexec/wifishare-helper`) and a polkit rule
   that lets the logged-in user run only that helper without a password,
 - a NetworkManager config file telling it to leave `ap0` alone,
-- `hostapd`, `dnsmasq-base` and `qrencode` if they're missing,
+- `hostapd`, `dnsmasq`, `iw`, `nftables` and `qrencode` if they're missing
+  (with apt, dnf, pacman or zypper),
 - if ufw is on, rules that let hotspot devices get an address, look up names
-  and reach the internet.
+  and reach the internet; if firewalld is on, it puts `ap0` in the
+  `nm-shared` zone.
 
 Keep the cloned folder: the extension and the `wifishare` command run from it.
 
@@ -93,6 +101,7 @@ wifishare set ssid "My Laptop"   # network name
 wifishare set password 'a-long-password'
 wifishare set band auto          # auto, 2.4 or 5
 wifishare off
+wifishare doctor                 # can this laptop run the hotspot?
 wifishare version
 ```
 
@@ -103,11 +112,17 @@ stored in `~/.config/wifishare/config`.
 
 - **Same as Wi-Fi** (default): the hotspot uses your Wi-Fi connection's band
   and channel.
-- **2.4 GHz / 5 GHz**: used when you're not on Wi-Fi (for example on
-  Ethernet). While you are on Wi-Fi, a single Wi-Fi card can only host on the
-  channel it's connected on, so a band that doesn't match is shown as
-  "(using 2.4 GHz)" and applies next time it can. To get a 5 GHz hotspot,
-  connect your laptop to a 5 GHz network.
+- **2.4 GHz / 5 GHz**: the hotspot uses that band. Most cards can only host on
+  the channel they're connected on, so if your router has the same network
+  on that band, wifishare reconnects your Wi-Fi there while sharing. If it
+  can't, the hotspot stays on your Wi-Fi's band and the menu says so.
+
+Some channels can never host a hotspot: radar-protected **DFS** channels
+(5 GHz channels 52–144) and 6 GHz. Some cards also refuse certain other 5 GHz
+channels at times (shown as *No-IR*). When your Wi-Fi is on one of these,
+wifishare moves your Wi-Fi to the same network's 2.4 GHz band while sharing
+and releases it when you turn sharing off. Turn this off with
+`wifishare set move-wifi no` or **Switch Wi-Fi band when needed** in settings.
 
 Both bands at once isn't possible with one card; that needs two radios, which
 is what a dual-band router has.
@@ -146,6 +161,15 @@ symlink would let anything that can edit your files run code as root.
 
 ## Troubleshooting
 
+Start with `wifishare doctor`: it checks the card, the current channel, the
+installed parts and the firewall, and says what to change.
+
+- **"your Wi-Fi is on DFS channel …"**: your router's 5 GHz network uses a
+  radar-protected channel and isn't visible on 2.4 GHz from where you are.
+  Connect to the router's 2.4 GHz network, set the router's 5 GHz channel to
+  36–48 or 149–165, or use Ethernet.
+- **"can't run a hotspot while connected to Wi-Fi"**: the card doesn't
+  support it. Share from Ethernet instead, or try a newer kernel.
 - **"Share Wi-Fi" isn't in Quick Settings**: log out and back in, then
   `gnome-extensions enable wifishare@kumarsujay03.github.io`.
 - **It won't start**: run `wifishare on` in a terminal to see the error, and

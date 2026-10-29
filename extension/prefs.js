@@ -98,7 +98,7 @@ export default class WifiSharePreferences extends ExtensionPreferences {
         const sourceRow = new Adw.ActionRow({title: 'Internet from', subtitle: '–'});
         sourceRow.add_prefix(new Gtk.Image({icon_name: 'network-wireless-symbolic'}));
         statusGroup.add(sourceRow);
-        const addressRow = new Adw.ActionRow({title: 'Hotspot address', subtitle: '192.168.137.1'});
+        const addressRow = new Adw.ActionRow({title: 'Hotspot address', subtitle: '–'});
         addressRow.add_prefix(new Gtk.Image({icon_name: 'network-workgroup-symbolic'}));
         statusGroup.add(addressRow);
 
@@ -117,10 +117,16 @@ export default class WifiSharePreferences extends ExtensionPreferences {
 
         const bandRow = new Adw.ComboRow({
             title: 'Band',
-            subtitle: 'While you’re on Wi-Fi, the hotspot can only use your connection’s band. 2.4 or 5 GHz applies on Ethernet or a network on that band.',
+            subtitle: 'Same as Wi-Fi follows your connection. 2.4 or 5 GHz moves your Wi-Fi to that band of the same network when your card needs it and the router has it.',
             model: Gtk.StringList.new(['Same as Wi-Fi connection', '2.4 GHz', '5 GHz']),
         });
         settingsGroup.add(bandRow);
+
+        const moveRow = new Adw.SwitchRow({
+            title: 'Switch Wi-Fi band when needed',
+            subtitle: 'If your Wi-Fi’s channel can’t host a hotspot (for example a radar-protected 5 GHz channel), reconnect it on 2.4 GHz while sharing.',
+        });
+        settingsGroup.add(moveRow);
 
         // --- Join ----------------------------------------------------------
 
@@ -274,13 +280,15 @@ export default class WifiSharePreferences extends ExtensionPreferences {
                 ssidRow.text = state.ssid;
                 passRow.text = state.password;
                 bandRow.selected = Math.max(0, BANDS.indexOf(state.band));
+                moveRow.active = state.move_wifi;
             }
             updating = false;
 
             sourceRow.subtitle = GLib.markup_escape_text(state.source
                 ? `${state.source} (${state.source_dev})`
                 : state.source_dev || 'No internet connection', -1);
-            addressRow.visible = state.active;
+            addressRow.visible = state.active && !!state.address;
+            addressRow.subtitle = state.address || '–';
             joinNameRow.subtitle = GLib.markup_escape_text(state.ssid, -1);
             joinPassRow.subtitle = GLib.markup_escape_text(state.password, -1);
             showDevices(state.devices ?? []);
@@ -294,8 +302,11 @@ export default class WifiSharePreferences extends ExtensionPreferences {
             switchRow.sensitive = false;
             switchRow.subtitle = switchRow.active ? 'Turning on…' : 'Turning off…';
             const res = await run([cli, switchRow.active ? 'on' : 'off']).catch(e => ({ok: false, err: e.message}));
+            const note = res.out?.split('\n').find(l => l.startsWith('Note: '));
             if (!res.ok)
                 toast(cleanError(res.err), 8);
+            else if (note)
+                toast(note.slice(6), 8);
             busy = false;
             switchRow.sensitive = true;
             refresh();
@@ -304,7 +315,7 @@ export default class WifiSharePreferences extends ExtensionPreferences {
         const save = async (key, value) => {
             const res = await run([cli, 'set', key, value]);
             if (res.ok)
-                toast(res.out.split('\n').find(l => l.startsWith('Saved.')) || 'Saved', 6);
+                toast(res.out.split('\n').find(l => l.startsWith('Saved.') || l.startsWith('Note: '))?.replace(/^Note: /, '') || 'Saved', 6);
             else
                 toast(cleanError(res.err), 6);
             refresh();
@@ -314,6 +325,10 @@ export default class WifiSharePreferences extends ExtensionPreferences {
         bandRow.connect('notify::selected', () => {
             if (!updating)
                 save('band', BANDS[bandRow.selected]);
+        });
+        moveRow.connect('notify::active', () => {
+            if (!updating)
+                save('move-wifi', moveRow.active ? 'yes' : 'no');
         });
 
         // Keep the status and device list live while the window is open.

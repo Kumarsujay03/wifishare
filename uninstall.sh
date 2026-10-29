@@ -22,5 +22,9 @@ if command -v ufw >/dev/null; then
     sudo ufw delete allow in on ap0 to any port 53 2>/dev/null
     sudo ufw route delete allow in on ap0 2>/dev/null
 fi
+if command -v firewall-cmd >/dev/null && systemctl is-active -q firewalld; then
+    sudo firewall-cmd --permanent --zone=nm-shared --remove-interface=ap0 >/dev/null 2>&1
+    sudo firewall-cmd --reload >/dev/null 2>&1
+fi
 
 echo "wifishare removed."

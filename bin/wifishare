@@ -5,10 +5,12 @@
 #   wifishare on | off | toggle
 #   wifishare status [--json]
 #   wifishare config [--json]
-#   wifishare set ssid|password|band <value>   band: auto, 2.4 or 5
+#   wifishare set ssid|password|band|move-wifi <value>
+#                                band: auto, 2.4 or 5; move-wifi: yes or no
 #   wifishare clients [--json]   connected devices: name, IP, MAC, signal
 #   wifishare qr                 print the path to a Wi-Fi QR code PNG
 #   wifishare update [--check]   git pull the repo and reinstall what changed
+#   wifishare doctor             check whether this laptop can run the hotspot
 #   wifishare version
 set -uo pipefail
 
@@ -17,6 +19,7 @@ RUN=/run/wifishare
 HELPER=/usr/local/libexec/wifishare-helper
 CONF_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/wifishare"
 CONF="$CONF_DIR/config"
+STATE="${XDG_RUNTIME_DIR:-/tmp}/wifishare"
 # This script is a symlink into the repo checkout.
 REPO=$(dirname "$(dirname "$(readlink -f "$0")")")
 
@@ -27,6 +30,7 @@ die() { echo "wifishare: $*" >&2; exit 1; }
 SSID=""
 PASSWORD=""
 BAND=auto   # auto (same as the Wi-Fi connection), 2.4 or 5
+MOVE_WIFI=yes   # may move the Wi-Fi connection to another band when needed
 
 load_config() {
     if [[ ! -f $CONF ]]; then
@@ -41,18 +45,21 @@ load_config() {
             ssid) SSID="${line#*=}" ;;
             password) PASSWORD="${line#*=}" ;;
             band) valid_band "${line#*=}" && BAND="${line#*=}" ;;
+            move_wifi) valid_yesno "${line#*=}" && MOVE_WIFI="${line#*=}" ;;
         esac
     done < "$CONF"
 }
 
 save_config() {
     mkdir -p "$CONF_DIR"
-    (umask 077; printf 'ssid=%s\npassword=%s\nband=%s\n' "$SSID" "$PASSWORD" "$BAND" > "$CONF")
+    (umask 077; printf 'ssid=%s\npassword=%s\nband=%s\nmove_wifi=%s\n' \
+        "$SSID" "$PASSWORD" "$BAND" "$MOVE_WIFI" > "$CONF")
 }
 
 valid_ssid() { local n; n=$(printf '%s' "$1" | wc -c); (( n >= 1 && n <= 32 )) && [[ $1 != *$'\n'* ]]; }
 valid_password() { [[ $1 =~ ^[[:print:]]{8,63}$ ]]; }
 valid_band() { [[ $1 == auto || $1 == 2.4 || $1 == 5 ]]; }
+valid_yesno() { [[ $1 == yes || $1 == no ]]; }
 
 band_name() { if (( $1 < 3000 )); then echo 2.4; else echo 5; fi; }
 
@@ -101,6 +108,92 @@ free_channel() {
         END { flush() }'
 }
 
+# The card's interface combinations, one per line.
+iface_combos() {
+    iw phy "$1" info 2>/dev/null | awk '
+        /valid interface combinations:/ { sec = 1; next }
+        sec && !/^\t\t/ { sec = 0 }
+        sec && /\* #\{/ { if (c) print c; c = $0; next }
+        sec { c = c " " $0 }
+        END { if (c) print c }'
+}
+
+# How many channels the card can use while it is both a Wi-Fi client and a
+# hotspot: 0 = can't do both at once, 1 = hotspot must share the Wi-Fi
+# connection's channel (most Intel cards), 2+ = hotspot can use any channel.
+ap_channels() {
+    iface_combos "$1" | awk '
+        /managed/ && /[{ ,]AP[,} ]/ {
+            n = 1
+            if (match($0, /#channels <= [0-9]+/)) n = substr($0, RSTART + 13, RLENGTH - 13) + 0
+            if (n > max) max = n
+        }
+        END { print max + 0 }'
+}
+
+# Why a channel can't host a hotspot, or nothing if it can: dfs or disabled
+# (never works), or noir ("No IR": may still work next to a Wi-Fi connection
+# on some cards, so hostapd gets to try).
+channel_problem() {
+    local flags
+    flags=$(iw phy "$1" channels 2>/dev/null | grep -A4 "MHz \[$2\]" | head -5)
+    if grep -q 'Radar detection' <<< "$flags"; then
+        echo dfs
+    elif grep -q disabled <<< "$flags"; then
+        echo disabled
+    elif grep -q 'No IR' <<< "$flags"; then
+        echo noir
+    fi
+}
+
+wifi_ssid() { iw dev "$1" info 2>/dev/null | sed -n 's/^\tssid //p'; }
+
+# Is the network we're connected to also visible on band bg (2.4) or a (5)?
+ssid_on_band() {
+    local ssid
+    ssid=$(wifi_ssid "$1")
+    [[ -n $ssid ]] || return 1
+    # A fresh scan: the cached list often only has the band we're on.
+    nmcli -t -f SSID,FREQ device wifi list ifname "$1" --rescan yes 2>/dev/null \
+        | awk -F: -v s="$ssid" -v b="$2" '
+            { sub(/\\:/, ":", $1) }
+            $1 == s { f = $NF + 0; if ((b == "bg" && f < 3000) || (b == "a" && f > 5000 && f < 5900)) found = 1 }
+            END { exit !found }'
+}
+
+# Reconnect the Wi-Fi on band bg or a, remembering the old setting so
+# restore_wifi can undo it when sharing stops.
+move_wifi() {
+    local parent=$1 band=$2 uuid old
+    uuid=$(nmcli -g GENERAL.CON-UUID device show "$parent" 2>/dev/null)
+    [[ -n $uuid ]] || return 1
+    old=$(nmcli -g 802-11-wireless.band connection show "$uuid" 2>/dev/null)
+    mkdir -p "$STATE"
+    printf '%s %s\n' "$uuid" "$old" > "$STATE/moved-wifi"
+    if ! nmcli connection modify "$uuid" 802-11-wireless.band "$band" \
+        || ! nmcli --wait 30 connection up "$uuid" ifname "$parent" >/dev/null 2>&1; then
+        restore_wifi
+        nmcli --wait 30 connection up "$uuid" ifname "$parent" >/dev/null 2>&1
+        return 1
+    fi
+    sleep 1   # let the new channel settle before reading it
+}
+
+# Undo move_wifi. With a band (bg/a), reconnect there first; otherwise only
+# lift the band lock, so the connection moves back on its next roam instead
+# of dropping now.
+restore_wifi() {
+    local uuid old
+    [[ -f $STATE/moved-wifi ]] || return 0
+    read -r uuid old < "$STATE/moved-wifi"
+    if [[ -n ${1:-} ]]; then
+        nmcli connection modify "$uuid" 802-11-wireless.band "$1" 2>/dev/null
+        nmcli --wait 30 connection up "$uuid" >/dev/null 2>&1
+    fi
+    nmcli connection modify "$uuid" 802-11-wireless.band "$old" 2>/dev/null
+    rm -f "$STATE/moved-wifi"
+}
+
 # Connected devices as a JSON array: stations from hostapd joined with
 # dnsmasq's DHCP leases (for the IP and the name the device sent).
 clients_json() {
@@ -133,53 +226,125 @@ client_count() {
 
 # --- on / off ------------------------------------------------------------
 
+# Start the AP through the root helper. Name and password go over stdin so
+# they don't show up in `ps`. Sets ERR on failure.
+start_ap() {
+    local parent=$1 channel=$2 freq=$3 band=g
+    (( freq > 3000 )) && band=a
+    ERR=$(printf '%s\n%s\n' "$SSID" "$PASSWORD" \
+        | pkexec "$HELPER" up "$parent" "$channel" "$band" 2>&1)
+}
+
+# Share on the chosen band; if that band can't be used right now, share on
+# the Wi-Fi connection's band instead of failing.
 turn_on() {
     load_config
+    if [[ $BAND != auto ]]; then
+        local out
+        if out=$(start_sharing 2>&1); then
+            echo "$out"
+            return
+        fi
+        echo "Note: couldn't share on $BAND GHz right now, so it's sharing on your Wi-Fi's band instead."
+        BAND=auto
+    fi
+    start_sharing
+}
+
+start_sharing() {
     valid_ssid "$SSID" || die "network name must be 1-32 bytes"
     valid_password "$PASSWORD" || die "password must be 8-63 printable characters"
 
-    local parent phy freq channel band
+    local parent phy freq channel want maxch problem ssid
     parent=$(parent_iface)
     [[ -n $parent ]] || die "no Wi-Fi adapter found"
     phy=$(iw dev "$parent" info | awk '/wiphy/ {print "phy" $2}')
+    iw phy "$phy" info | grep -A12 'Supported interface modes' | grep -q '\* AP$' \
+        || die "this Wi-Fi card can't run a hotspot (no access-point mode in its driver)"
+    want=$BAND
 
     read -r channel freq < <(iw dev "$parent" info | awk '/channel/ {print $2, substr($3, 2)}')
-    if [[ -n ${channel:-} ]]; then
-        # Connected over Wi-Fi: a single radio can only sit on one channel,
-        # so the hotspot has to use the connection's channel and band.
-        if (( freq >= 5900 )); then
-            die "sharing a 6 GHz connection isn't supported; connect on 2.4 or 5 GHz"
-        fi
-        if [[ $BAND != auto && $BAND != "$(band_name "$freq")" ]]; then
-            die "your Wi-Fi is on $(band_name "$freq") GHz, and this card can only host a hotspot on the same channel. Set the band to Auto, or connect to a $BAND GHz network or Ethernet"
-        fi
-        if (( freq > 3000 )) && iw phy "$phy" channels 2>/dev/null \
-            | grep -A4 "MHz \[$channel\]" | grep -q 'Radar detection'; then
-            die "your Wi-Fi is on DFS channel $channel, where a hotspot isn't allowed; connect on 2.4 GHz or a non-DFS 5 GHz channel"
-        fi
-    else
-        # Wi-Fi not in use (e.g. on Ethernet): pick a channel in the chosen
-        # band that this card may start a network on.
-        local want=$BAND
+
+    # Not on Wi-Fi (e.g. Ethernet): the radio is free, pick any good channel.
+    if [[ -z ${channel:-} ]]; then
         [[ $want == auto ]] && want=2.4
         read -r channel freq < <(free_channel "$phy" "$want")
         [[ -n ${channel:-} ]] || die "no $want GHz channel here allows a hotspot"
+        start_ap "$parent" "$channel" "$freq" || die "the hotspot didn't start: $(tail -n 3 <<< "$ERR" | tr '\n' ' ')"
+        echo "Sharing as \"$SSID\" on $(band_name "$freq") GHz, channel $channel"
+        return
     fi
-    if (( freq < 3000 )); then band=g; else band=a; fi
 
-    # The name and password go over stdin so they don't show up in `ps`.
-    local err
-    if ! err=$(printf '%s\n%s\n' "$SSID" "$PASSWORD" \
-            | pkexec "$HELPER" up "$parent" "$channel" "$band" 2>&1); then
-        die "the hotspot didn't start: $(tail -n 3 <<< "$err" | tr '\n' ' ')"
+    maxch=$(ap_channels "$phy")
+    (( maxch > 0 )) || die "this Wi-Fi card can't run a hotspot while connected to Wi-Fi. Connect with Ethernet and try again"
+    ssid=$(wifi_ssid "$parent")
+    [[ $want == auto ]] && want=$(band_name "$freq")
+    (( freq >= 5900 )) && problem=6ghz || problem=$(channel_problem "$phy" "$channel")
+
+    # 1. The Wi-Fi connection's own channel, when it may be usable and the
+    #    band is the one we want.
+    if [[ ( -z $problem || $problem == noir ) && $want == "$(band_name "$freq")" ]] \
+        && start_ap "$parent" "$channel" "$freq"; then
+        echo "Sharing $ssid as \"$SSID\" on $want GHz, channel $channel"
+        return
     fi
-    echo "Sharing $parent as \"$SSID\" on $(band_name "$freq") GHz, channel $channel"
+
+    # 2. Cards that can use two channels at once: any free channel.
+    local ch2 f2
+    if (( maxch >= 2 )); then
+        read -r ch2 f2 < <(free_channel "$phy" "$want")
+        if [[ -n ${ch2:-} ]] && start_ap "$parent" "$ch2" "$f2"; then
+            echo "Sharing $ssid as \"$SSID\" on $want GHz, channel $ch2"
+            return
+        fi
+    fi
+
+    # 3. Move the Wi-Fi connection to the same network on another band (if
+    #    the router has one), then share on its new channel. That band is the
+    #    one you picked, or 2.4 GHz when the current 5 GHz channel can't host.
+    local cur target=""
+    cur=$(band_name "$freq")
+    if [[ $want != "$cur" ]]; then
+        target=$want
+    elif [[ $cur == 5 ]]; then
+        target=2.4
+    fi
+    if [[ $MOVE_WIFI == yes && -n $target ]]; then
+        local nmband=bg curband=bg
+        [[ $target == 5 ]] && nmband=a
+        [[ $cur == 5 ]] && curband=a
+        if ssid_on_band "$parent" "$nmband" && move_wifi "$parent" "$nmband"; then
+            read -r ch2 f2 < <(iw dev "$parent" info | awk '/channel/ {print $2, substr($3, 2)}')
+            if [[ -n ${ch2:-} && $(channel_problem "$phy" "$ch2") != @(dfs|disabled) ]] \
+                && start_ap "$parent" "$ch2" "$f2"; then
+                echo "Note: moved your Wi-Fi ($ssid) to $target GHz so it can share; it's released when you turn sharing off."
+                echo "Sharing $ssid as \"$SSID\" on $target GHz, channel $ch2"
+                return
+            fi
+            # Didn't help: put the Wi-Fi back where it was.
+            restore_wifi "$curband"
+            die "moved your Wi-Fi ($ssid) to $target GHz, but this card won't start a hotspot on its channel there (${ch2:-?}), so it's back on $cur GHz. Set the band to Same as Wi-Fi to share on $cur GHz"
+        fi
+    fi
+
+    # Nothing worked: explain what to change.
+    case $problem in
+    dfs) die "your Wi-Fi ($ssid) is on 5 GHz channel $channel, a radar-protected (DFS) channel where laptops can't start a hotspot, and this card can only host on the channel it's connected to. Connect to a 2.4 GHz network, set your router's 5 GHz channel to 36-48 or 149-165, or use Ethernet" ;;
+    6ghz) die "your Wi-Fi ($ssid) is on 6 GHz, where laptops can't start a hotspot. Connect on 2.4 or 5 GHz, or use Ethernet" ;;
+    disabled) die "channel $channel isn't allowed for a hotspot here. Connect on another band or use Ethernet" ;;
+    noir) die "your Wi-Fi card won't start a hotspot on channel $channel ($(band_name "$freq") GHz) right now, and $ssid isn't available on 2.4 GHz here. Connect to a 2.4 GHz network or use Ethernet" ;;
+    esac
+    if [[ $want != "$(band_name "$freq")" ]]; then
+        die "your Wi-Fi is on $(band_name "$freq") GHz and this card can only host on the same channel. Set the band to Auto, or connect to a $want GHz network or Ethernet"
+    fi
+    die "the hotspot didn't start: $(tail -n 3 <<< "${ERR:-}" | tr '\n' ' ')"
 }
 
 turn_off() {
     if [[ -e /sys/class/net/$AP || -d $RUN ]]; then
         pkexec "$HELPER" down || die "could not remove the hotspot interface"
     fi
+    restore_wifi
     echo "Hotspot off"
 }
 
@@ -197,15 +362,17 @@ status)
     channel="" freq="" ghz=""
     [[ $active == true ]] && read -r channel freq < <(iw dev "$AP" info 2>/dev/null | awk '/channel/ {print $2, substr($3, 2)}')
     [[ -n $freq ]] && ghz=$(band_name "$freq")
+    address=$(ip -4 -o addr show "$AP" 2>/dev/null | awk '{sub("/.*", "", $4); print $4; exit}')
     # Where the internet comes from: the interface of the default route.
     src_dev=$(ip route get 1.1.1.1 2>/dev/null | awk '{for (i = 1; i < NF; i++) if ($i == "dev") { print $(i + 1); exit }}')
     src_name=""
     [[ -n $src_dev ]] && src_name=$(nmcli -g GENERAL.CONNECTION device show "$src_dev" 2>/dev/null)
     if [[ ${2:-} == --json ]]; then
-        printf '{"active":%s,"ssid":%s,"password":%s,"band":%s,"clients":%d,"channel":%s,"ghz":%s,"source":%s,"source_dev":%s,"devices":%s}\n' \
+        printf '{"active":%s,"ssid":%s,"password":%s,"band":%s,"clients":%d,"channel":%s,"ghz":%s,"source":%s,"source_dev":%s,"address":%s,"move_wifi":%s,"devices":%s}\n' \
             "$active" "$(json_str "$SSID")" "$(json_str "$PASSWORD")" "$(json_str "$BAND")" \
             "$clients" "${channel:-null}" "$(if [[ -n $ghz ]]; then json_str "$ghz"; else echo null; fi)" \
-            "$(json_str "$src_name")" "$(json_str "$src_dev")" "$(clients_json)"
+            "$(json_str "$src_name")" "$(json_str "$src_dev")" "$(json_str "$address")" \
+            "$( [[ $MOVE_WIFI == yes ]] && echo true || echo false)" "$(clients_json)"
     else
         if [[ $active == true ]]; then
             echo "On: \"$SSID\" on $ghz GHz, channel $channel, $clients device(s) connected"
@@ -235,10 +402,11 @@ for d in devs:
 config)
     load_config
     if [[ ${2:-} == --json ]]; then
-        printf '{"ssid":%s,"password":%s,"band":%s}\n' \
-            "$(json_str "$SSID")" "$(json_str "$PASSWORD")" "$(json_str "$BAND")"
+        printf '{"ssid":%s,"password":%s,"band":%s,"move_wifi":%s}\n' \
+            "$(json_str "$SSID")" "$(json_str "$PASSWORD")" "$(json_str "$BAND")" \
+            "$( [[ $MOVE_WIFI == yes ]] && echo true || echo false)"
     else
-        printf 'ssid=%s\npassword=%s\nband=%s\n' "$SSID" "$PASSWORD" "$BAND"
+        printf 'ssid=%s\npassword=%s\nband=%s\nmove_wifi=%s\n' "$SSID" "$PASSWORD" "$BAND" "$MOVE_WIFI"
     fi
     ;;
 set)
@@ -248,20 +416,16 @@ set)
         ssid) valid_ssid "$value" || die "network name must be 1-32 bytes"; SSID=$value ;;
         password) valid_password "$value" || die "password must be 8-63 printable characters"; PASSWORD=$value ;;
         band) valid_band "$value" || die "band must be auto, 2.4 or 5"; BAND=$value ;;
-        *) die "usage: wifishare set ssid|password|band <value>" ;;
+        move-wifi) valid_yesno "$value" || die "move-wifi must be yes or no"; MOVE_WIFI=$value ;;
+        *) die "usage: wifishare set ssid|password|band|move-wifi <value>" ;;
     esac
     save_config
-    # Apply right away if the hotspot is running, unless the new band can't
-    # be used while on this Wi-Fi connection; then keep it for next time.
+    # Apply right away if the hotspot is running. If the new band can't be
+    # used right now, keep sharing on the Wi-Fi's band and keep the choice
+    # for next time.
     if is_active; then
-        read -r _ freq < <(iw dev "$AP" info 2>/dev/null | awk '/channel/ {print $2, substr($3, 2)}')
-        parent=$(parent_iface)
-        if [[ $key == band && $BAND != auto && -n $freq && $BAND != "$(band_name "$freq")" ]] \
-            && iw dev "$parent" info | grep -q channel; then
-            echo "Saved. Your Wi-Fi is on $(band_name "$freq") GHz, so the hotspot stays there; $BAND GHz applies when you're on a $BAND GHz network or Ethernet."
-        else
-            turn_off >/dev/null && turn_on
-        fi
+        turn_off >/dev/null
+        turn_on
     fi
     ;;
 qr)
@@ -277,6 +441,88 @@ qr)
         qrencode -o "$file" -s 12 -m 2 -l M "$payload" || die "could not make the QR code"
     fi
     echo "$file"
+    ;;
+doctor)
+    # Checks whether this laptop can run the hotspot, and why not if it can't.
+    fails=0
+    g="" y="" r="" n=""
+    [[ -t 1 ]] && g=$'\e[32m' y=$'\e[33m' r=$'\e[31m' n=$'\e[0m'
+    ok() { printf '  %s✓%s %s\n' "$g" "$n" "$*"; }
+    warn() { printf '  %s!%s %s\n' "$y" "$n" "$*"; }
+    bad() { printf '  %s✗%s %s\n' "$r" "$n" "$*"; fails=$((fails + 1)); }
+
+    echo "Wi-Fi card"
+    parent=$(parent_iface)
+    if [[ -z $parent ]]; then
+        bad "no Wi-Fi adapter found"
+    else
+        phy=$(iw dev "$parent" info | awk '/wiphy/ {print "phy" $2}')
+        driver=$(basename "$(readlink -f "/sys/class/net/$parent/device/driver")" 2>/dev/null)
+        ok "$parent (driver ${driver:-unknown})"
+        if iw phy "$phy" info | grep -A12 'Supported interface modes' | grep -q '\* AP$'; then
+            ok "supports hotspot (AP) mode"
+        else
+            bad "driver has no hotspot (AP) mode; this card can't share at all"
+        fi
+        case $(ap_channels "$phy") in
+            0) bad "can't be a hotspot while connected to Wi-Fi; share only from Ethernet" ;;
+            1) ok "hotspot alongside Wi-Fi, on the same channel as the connection" ;;
+            *) ok "hotspot alongside Wi-Fi, on any channel" ;;
+        esac
+
+        echo "Current connection"
+        read -r channel freq < <(iw dev "$parent" info | awk '/channel/ {print $2, substr($3, 2)}')
+        if [[ -z ${channel:-} ]]; then
+            ok "Wi-Fi not connected; the hotspot can use any free channel"
+        else
+            net=$(wifi_ssid "$parent")
+            problem=$(channel_problem "$phy" "$channel")
+            (( freq >= 5900 )) && problem=6ghz
+            if [[ -z $problem ]]; then
+                ok "$net on $(band_name "$freq") GHz, channel $channel: can host"
+            elif [[ $problem == noir ]] && ssid_on_band "$parent" bg; then
+                warn "$net is on channel $channel, marked No-IR: if the card refuses to host there, sharing moves your Wi-Fi to $net's 2.4 GHz band"
+            elif [[ $problem == noir ]]; then
+                warn "$net is on channel $channel, marked No-IR: the card may refuse to host there, and $net isn't visible on 2.4 GHz"
+            elif (( $(ap_channels "$phy") >= 2 )); then
+                ok "$net is on channel $channel (${problem^^}); the hotspot will use another channel"
+            elif ssid_on_band "$parent" bg; then
+                warn "$net is on channel $channel (${problem^^}), which can't host; sharing will move your Wi-Fi to $net's 2.4 GHz band"
+            else
+                bad "$net is on channel $channel (${problem^^}), which can't host, and isn't visible on 2.4 GHz. Use 2.4 GHz, set the router's 5 GHz to channel 36-48 or 149-165, or use Ethernet"
+            fi
+        fi
+    fi
+
+    echo "Installed parts"
+    for t in hostapd dnsmasq iw nft pkexec qrencode; do
+        if command -v "$t" >/dev/null || [[ -x /usr/sbin/$t ]]; then ok "$t"; else bad "$t is missing (run install.sh)"; fi
+    done
+    if [[ -x $HELPER ]]; then
+        if cmp -s "$REPO/helper/wifishare-helper" "$HELPER"; then ok "root helper up to date"; else warn "root helper is out of date (run install.sh)"; fi
+    else
+        bad "root helper not installed (run install.sh)"
+    fi
+    [[ -f /usr/share/polkit-1/actions/io.github.kumarsujay03.wifishare.policy ]] && ok "polkit rule" || bad "polkit rule missing (run install.sh)"
+    [[ -f /etc/NetworkManager/conf.d/90-wifishare.conf ]] && ok "NetworkManager leaves ap0 alone" || bad "NetworkManager config missing (run install.sh)"
+    if gnome-extensions info wifishare@kumarsujay03.github.io 2>/dev/null | grep -q 'Enabled: Yes'; then
+        ok "Quick Settings extension enabled"
+    else
+        warn "Quick Settings extension not enabled (log out and in, then: gnome-extensions enable wifishare@kumarsujay03.github.io)"
+    fi
+
+    echo "Firewall"
+    if systemctl is-active -q firewalld 2>/dev/null; then
+        warn "firewalld is on; install.sh puts ap0 in its nm-shared zone"
+    elif systemctl is-active -q ufw 2>/dev/null; then
+        ok "ufw is on; install.sh adds rules for ap0"
+    else
+        ok "no firewall to configure"
+    fi
+
+    echo
+    if (( fails )); then echo "$fails problem(s) found."; exit 1; fi
+    echo "Everything looks good."
     ;;
 version)
     echo "wifishare $(< "$REPO/VERSION") ($(git -C "$REPO" describe --tags --always --dirty 2>/dev/null || echo unknown))"
